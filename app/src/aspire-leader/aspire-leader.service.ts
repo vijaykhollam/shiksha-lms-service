@@ -14,11 +14,17 @@ import { LessonStatus } from '../lessons/entities/lesson.entity';
 import { EnrollmentStatus } from '../enrollments/entities/user-enrollment.entity';
 import { Course } from '../courses/entities/course.entity';
 import { Lesson } from '../lessons/entities/lesson.entity';
-import { CourseTrack, TrackingStatus } from '../tracking/entities/course-track.entity';
+import {
+  CourseTrack,
+  TrackingStatus,
+} from '../tracking/entities/course-track.entity';
 import { LessonTrack } from '../tracking/entities/lesson-track.entity';
 import { UserEnrollment } from '../enrollments/entities/user-enrollment.entity';
 import { CourseReportDto } from './dto/course-report.dto';
-import { LessonCompletionStatusDto, LessonCompletionStatusResponseDto } from './dto/lesson-completion-status.dto';
+import {
+  LessonCompletionStatusDto,
+  LessonCompletionStatusResponseDto,
+} from './dto/lesson-completion-status.dto';
 import { UpdateTestProgressDto } from './dto/update-test-progress.dto';
 import { RESPONSE_MESSAGES } from '../common/constants/response-messages.constant';
 import { AttemptsGradeMethod } from '../lessons/entities/lesson.entity';
@@ -57,15 +63,17 @@ export class AspireLeaderService {
     authorization: string,
   ): Promise<any> {
     const startTime = Date.now();
-    this.logger.log(`Generating course report for courseId: ${reportDto.courseId}, cohortId: ${reportDto.cohortId}`);
+    this.logger.log(
+      `Generating course report for courseId: ${reportDto.courseId}, cohortId: ${reportDto.cohortId}`,
+    );
 
     // Validate course exists
     const course = await this.courseRepository.findOne({
-      where: { 
+      where: {
         courseId: reportDto.courseId,
         tenantId,
         organisationId,
-        status: Not(CourseStatus.ARCHIVED)
+        status: Not(CourseStatus.ARCHIVED),
       } as FindOptionsWhere<Course>,
     });
 
@@ -76,14 +84,28 @@ export class AspireLeaderService {
     // Check if lesson-level report is requested
     let result: any;
     if (reportDto.lessonId) {
-      result = await this.generateLessonLevelReport(reportDto, course, tenantId, organisationId, authorization);
+      result = await this.generateLessonLevelReport(
+        reportDto,
+        course,
+        tenantId,
+        organisationId,
+        authorization,
+      );
     } else {
-      result = await this.generateCourseLevelReport(reportDto, course, tenantId, organisationId, authorization);
+      result = await this.generateCourseLevelReport(
+        reportDto,
+        course,
+        tenantId,
+        organisationId,
+        authorization,
+      );
     }
 
     const duration = Date.now() - startTime;
-    this.logger.log(`Report generated in ${duration}ms for courseId: ${reportDto.courseId}`);
-    
+    this.logger.log(
+      `Report generated in ${duration}ms for courseId: ${reportDto.courseId}`,
+    );
+
     return result;
   }
 
@@ -104,31 +126,45 @@ export class AspireLeaderService {
       .leftJoin(
         'user_enrollments',
         'enrollment',
-        'enrollment.courseId = courseTrack.courseId AND enrollment.userId = courseTrack.userId AND enrollment.tenantId = courseTrack.tenantId'
+        'enrollment.courseId = courseTrack.courseId AND enrollment.userId = courseTrack.userId AND enrollment.tenantId = courseTrack.tenantId',
       )
       .addSelect([
         'enrollment.enrollmentId',
         'enrollment.userId',
         'enrollment.status',
         'enrollment.enrolledAt',
-        'enrollment.endTime'
+        'enrollment.endTime',
       ])
-      .where('courseTrack.courseId = :courseId', { courseId: reportDto.courseId })
+      .where('courseTrack.courseId = :courseId', {
+        courseId: reportDto.courseId,
+      })
       .andWhere('courseTrack.tenantId = :tenantId', { tenantId })
-      .andWhere('courseTrack.organisationId = :organisationId', { organisationId })
-      .andWhere('(enrollment.status IS NULL OR enrollment.status != :status)', { status: EnrollmentStatus.ARCHIVED });
+      .andWhere('courseTrack.organisationId = :organisationId', {
+        organisationId,
+      })
+      .andWhere('(enrollment.status IS NULL OR enrollment.status != :status)', {
+        status: EnrollmentStatus.ARCHIVED,
+      });
 
     // Apply status filter (course tracking status)
     if (reportDto.status) {
-      queryBuilder.andWhere('courseTrack.status = :trackingStatus', { trackingStatus: reportDto.status });
+      queryBuilder.andWhere('courseTrack.status = :trackingStatus', {
+        trackingStatus: reportDto.status,
+      });
     }
     // Apply certificate issued filter
     if (reportDto.certificateIssued !== undefined) {
-      queryBuilder.andWhere('courseTrack.certificateIssued = :certificateIssued', { certificateIssued: reportDto.certificateIssued });
+      queryBuilder.andWhere(
+        'courseTrack.certificateIssued = :certificateIssued',
+        { certificateIssued: reportDto.certificateIssued },
+      );
     }
 
     const enrollmentData = await queryBuilder
-      .orderBy(this.getSortField(reportDto.sortBy || 'progress', true), (reportDto.orderBy?.toUpperCase() as 'ASC' | 'DESC') || 'DESC')
+      .orderBy(
+        this.getSortField(reportDto.sortBy || 'progress', true),
+        (reportDto.orderBy?.toUpperCase() as 'ASC' | 'DESC') || 'DESC',
+      )
       .addOrderBy('courseTrack.lastAccessedDate', 'DESC') // Secondary sort for consistent ordering
       .skip(reportDto.offset || 0)
       .take(reportDto.limit || 10)
@@ -140,20 +176,31 @@ export class AspireLeaderService {
       .leftJoin(
         'user_enrollments',
         'enrollment',
-        'enrollment.courseId = courseTrack.courseId AND enrollment.userId = courseTrack.userId AND enrollment.tenantId = courseTrack.tenantId'
+        'enrollment.courseId = courseTrack.courseId AND enrollment.userId = courseTrack.userId AND enrollment.tenantId = courseTrack.tenantId',
       )
-      .where('courseTrack.courseId = :courseId', { courseId: reportDto.courseId })
+      .where('courseTrack.courseId = :courseId', {
+        courseId: reportDto.courseId,
+      })
       .andWhere('courseTrack.tenantId = :tenantId', { tenantId })
-      .andWhere('courseTrack.organisationId = :organisationId', { organisationId })
-      .andWhere('(enrollment.status IS NULL OR enrollment.status != :status)', { status: EnrollmentStatus.ARCHIVED });
+      .andWhere('courseTrack.organisationId = :organisationId', {
+        organisationId,
+      })
+      .andWhere('(enrollment.status IS NULL OR enrollment.status != :status)', {
+        status: EnrollmentStatus.ARCHIVED,
+      });
 
     // Apply same filters to count query
     if (reportDto.status) {
-      countQueryBuilder.andWhere('courseTrack.status = :trackingStatus', { trackingStatus: reportDto.status });
+      countQueryBuilder.andWhere('courseTrack.status = :trackingStatus', {
+        trackingStatus: reportDto.status,
+      });
     }
 
     if (reportDto.certificateIssued !== undefined) {
-      countQueryBuilder.andWhere('courseTrack.certificateIssued = :certificateIssued', { certificateIssued: reportDto.certificateIssued });
+      countQueryBuilder.andWhere(
+        'courseTrack.certificateIssued = :certificateIssued',
+        { certificateIssued: reportDto.certificateIssued },
+      );
     }
 
     const totalCount = await countQueryBuilder.getCount();
@@ -167,13 +214,18 @@ export class AspireLeaderService {
       };
     }
 
-    const userIds = enrollmentData.map(enrollment => enrollment.userId);
+    const userIds = enrollmentData.map((enrollment) => enrollment.userId);
 
     // Fetch user data from external API - limit matches the number of users we're requesting
-    const userData = await this.fetchUserData(userIds, tenantId, organisationId, authorization);
+    const userData = await this.fetchUserData(
+      userIds,
+      tenantId,
+      organisationId,
+      authorization,
+    );
 
     // Create a map of user data for efficient lookup while preserving order
-    const userDataMap = new Map(userData.map(user => [user.userId, user]));
+    const userDataMap = new Map(userData.map((user) => [user.userId, user]));
 
     // Combine data and create report items - maintain the original database order
     const reportItems: any[] = [];
@@ -185,9 +237,14 @@ export class AspireLeaderService {
 
       if (user) {
         // Calculate progress
-        const progress = courseTrackData.noOfLessons > 0 
-          ? Math.round((courseTrackData.completedLessons / courseTrackData.noOfLessons) * 100)
-          : 0;
+        const progress =
+          courseTrackData.noOfLessons > 0
+            ? Math.round(
+                (courseTrackData.completedLessons /
+                  courseTrackData.noOfLessons) *
+                  100,
+              )
+            : 0;
 
         reportItems.push({
           ...user,
@@ -213,7 +270,9 @@ export class AspireLeaderService {
           enrollmentStatus: enrollment?.status,
           enrolledDate: enrollment?.enrolledAt?.toISOString(),
           completedDate: enrollment?.endTime?.toISOString(),
-          progress: courseTrackData.completedLessons / courseTrackData.noOfLessons * 100 || 0,
+          progress:
+            (courseTrackData.completedLessons / courseTrackData.noOfLessons) *
+              100 || 0,
         });
       }
     }
@@ -244,14 +303,13 @@ export class AspireLeaderService {
         courseId: reportDto.courseId,
         tenantId,
         organisationId,
-        status: Not(LessonStatus.ARCHIVED)
+        status: Not(LessonStatus.ARCHIVED),
       } as FindOptionsWhere<Lesson>,
     });
 
     if (!lesson) {
       throw new NotFoundException(RESPONSE_MESSAGES.ERROR.LESSON_NOT_FOUND);
     }
-
 
     // Query with INNER JOIN lesson track and course, LEFT JOIN with enrollment
     const enrollmentData = await this.lessonTrackRepository
@@ -260,21 +318,32 @@ export class AspireLeaderService {
       .leftJoin(
         'user_enrollments',
         'enrollment',
-        'enrollment.courseId = lessonTrack.courseId AND enrollment.userId = lessonTrack.userId AND enrollment.tenantId = lessonTrack.tenantId'
+        'enrollment.courseId = lessonTrack.courseId AND enrollment.userId = lessonTrack.userId AND enrollment.tenantId = lessonTrack.tenantId',
       )
       .addSelect([
         'enrollment.enrollmentId',
         'enrollment.userId',
         'enrollment.status',
         'enrollment.enrolledAt',
-        'enrollment.endTime'
+        'enrollment.endTime',
       ])
-      .where('lessonTrack.lessonId = :lessonId', { lessonId: reportDto.lessonId })
-      .andWhere('lessonTrack.courseId = :courseId', { courseId: reportDto.courseId })
+      .where('lessonTrack.lessonId = :lessonId', {
+        lessonId: reportDto.lessonId,
+      })
+      .andWhere('lessonTrack.courseId = :courseId', {
+        courseId: reportDto.courseId,
+      })
       .andWhere('lessonTrack.tenantId = :tenantId', { tenantId })
-      .andWhere('lessonTrack.organisationId = :organisationId', { organisationId })
-      .andWhere('(enrollment.status IS NULL OR enrollment.status != :status)', { status: EnrollmentStatus.ARCHIVED })
-      .orderBy(this.getSortField(reportDto.sortBy || 'progress', false), (reportDto.orderBy?.toUpperCase() as 'ASC' | 'DESC') || 'DESC')
+      .andWhere('lessonTrack.organisationId = :organisationId', {
+        organisationId,
+      })
+      .andWhere('(enrollment.status IS NULL OR enrollment.status != :status)', {
+        status: EnrollmentStatus.ARCHIVED,
+      })
+      .orderBy(
+        this.getSortField(reportDto.sortBy || 'progress', false),
+        (reportDto.orderBy?.toUpperCase() as 'ASC' | 'DESC') || 'DESC',
+      )
       .addOrderBy('lessonTrack.updatedAt', 'DESC') // Tertiary sort by last update time
       .skip(reportDto.offset || 0)
       .take(reportDto.limit || 10)
@@ -286,13 +355,21 @@ export class AspireLeaderService {
       .leftJoin(
         'user_enrollments',
         'enrollment',
-        'enrollment.courseId = lessonTrack.courseId AND enrollment.userId = lessonTrack.userId AND enrollment.tenantId = lessonTrack.tenantId'
+        'enrollment.courseId = lessonTrack.courseId AND enrollment.userId = lessonTrack.userId AND enrollment.tenantId = lessonTrack.tenantId',
       )
-      .where('lessonTrack.lessonId = :lessonId', { lessonId: reportDto.lessonId })
-      .andWhere('lessonTrack.courseId = :courseId', { courseId: reportDto.courseId })
+      .where('lessonTrack.lessonId = :lessonId', {
+        lessonId: reportDto.lessonId,
+      })
+      .andWhere('lessonTrack.courseId = :courseId', {
+        courseId: reportDto.courseId,
+      })
       .andWhere('lessonTrack.tenantId = :tenantId', { tenantId })
-      .andWhere('lessonTrack.organisationId = :organisationId', { organisationId })
-      .andWhere('(enrollment.status IS NULL OR enrollment.status != :status)', { status: EnrollmentStatus.ARCHIVED })
+      .andWhere('lessonTrack.organisationId = :organisationId', {
+        organisationId,
+      })
+      .andWhere('(enrollment.status IS NULL OR enrollment.status != :status)', {
+        status: EnrollmentStatus.ARCHIVED,
+      })
       .getCount();
 
     if (enrollmentData.length === 0) {
@@ -304,13 +381,18 @@ export class AspireLeaderService {
       };
     }
 
-    const userIds = enrollmentData.map(enrollment => enrollment.userId);
+    const userIds = enrollmentData.map((enrollment) => enrollment.userId);
 
     // Fetch user data from external API - limit matches the number of users we're requesting
-    const userData = await this.fetchUserData(userIds, tenantId, organisationId, authorization);
+    const userData = await this.fetchUserData(
+      userIds,
+      tenantId,
+      organisationId,
+      authorization,
+    );
 
     // Create a map of user data for efficient lookup while preserving order
-    const userDataMap = new Map(userData.map(user => [user.userId, user]));
+    const userDataMap = new Map(userData.map((user) => [user.userId, user]));
 
     // Combine data and create report items - maintain the original database order
     const reportItems: any[] = [];
@@ -356,38 +438,57 @@ export class AspireLeaderService {
   /**
    * Fetch user data from external API
    */
-  private async fetchUserData(userIds: string[], tenantId: string, organisationId: string, authorization: string): Promise<any[]> {
+  private async fetchUserData(
+    userIds: string[],
+    tenantId: string,
+    organisationId: string,
+    authorization: string,
+  ): Promise<any[]> {
     try {
       const userServiceUrl = this.configService.get('USER_SERVICE_URL', '');
 
       if (!userServiceUrl) {
-        throw new BadRequestException(RESPONSE_MESSAGES.ERROR.USER_SERVICE_URL_NOT_CONFIGURED);
+        throw new BadRequestException(
+          RESPONSE_MESSAGES.ERROR.USER_SERVICE_URL_NOT_CONFIGURED,
+        );
       }
 
-      const response = await axios.post(`${userServiceUrl}/list`, {
-        filters: { userId: userIds },
-        limit: userIds.length,
-        includeCustomFields: false,
-        }, {
+      const response = await axios.post(
+        `${userServiceUrl}/list`,
+        {
+          filters: { userId: userIds },
+          limit: userIds.length,
+          includeCustomFields: false,
+        },
+        {
           headers: {
-            'tenantid': tenantId,
-            'organisationId': organisationId,
-            'Authorization': authorization,
-            'Content-Type': 'application/json'
-          }
-        });
+            tenantid: tenantId,
+            organisationId: organisationId,
+            Authorization: authorization,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
 
       // Handle the actual response format from the user service
       const userDetails = response.data.result?.getUserDetails || [];
-      
+
       // Filter out audit fields from user data
       return userDetails.map((user: any) => {
-        const { createdBy, updatedBy, createdAt, updatedAt, ...userWithoutAudit } = user;
+        const {
+          createdBy,
+          updatedBy,
+          createdAt,
+          updatedAt,
+          ...userWithoutAudit
+        } = user;
         return userWithoutAudit;
-      });     
+      });
     } catch (error) {
       this.logger.error('Failed to fetch user data from external API', error);
-      throw new BadRequestException(RESPONSE_MESSAGES.ERROR.FAILED_TO_FETCH_USER_DATA);
+      throw new BadRequestException(
+        RESPONSE_MESSAGES.ERROR.FAILED_TO_FETCH_USER_DATA,
+      );
     }
   }
 
@@ -400,27 +501,33 @@ export class AspireLeaderService {
     organisationId: string,
   ): Promise<LessonCompletionStatusResponseDto> {
     const startTime = Date.now();
-    this.logger.log(`Checking lesson completion status for cohortId: ${completionDto.cohortId}`);
+    this.logger.log(
+      `Checking lesson completion status for cohortId: ${completionDto.cohortId}`,
+    );
 
     // Find courses that have this cohortId in their params
     const cohortCourses = await this.courseRepository
-    .createQueryBuilder('course')
-    .where('course."tenantId" = :tenantId', { tenantId })
-    .andWhere('course."organisationId" = :organisationId', { organisationId })
-    .andWhere('course."status" = :status', { status: CourseStatus.PUBLISHED })
-    .andWhere(`course."params"->>'cohortId' = :cohortId`, {
-      cohortId: completionDto.cohortId,
-    })
-    .getMany();
+      .createQueryBuilder('course')
+      .where('course."tenantId" = :tenantId', { tenantId })
+      .andWhere('course."organisationId" = :organisationId', { organisationId })
+      .andWhere('course."status" = :status', { status: CourseStatus.PUBLISHED })
+      .andWhere(`course."params"->>'cohortId' = :cohortId`, {
+        cohortId: completionDto.cohortId,
+      })
+      .getMany();
 
     if (cohortCourses.length === 0) {
-      throw new NotFoundException(`No any course found with cohortId: ${completionDto.cohortId}`);
+      throw new NotFoundException(
+        `No any course found with cohortId: ${completionDto.cohortId}`,
+      );
     }
 
     // Get course IDs for this cohort
-    const cohortCourseIds = cohortCourses.map(course => course.courseId);
-    
-    this.logger.log(`Found ${cohortCourses.length} courses for cohortId: ${completionDto.cohortId}`);
+    const cohortCourseIds = cohortCourses.map((course) => course.courseId);
+
+    this.logger.log(
+      `Found ${cohortCourses.length} courses for cohortId: ${completionDto.cohortId}`,
+    );
 
     const criteriaResults: Array<{
       criterion: any;
@@ -438,11 +545,11 @@ export class AspireLeaderService {
         criterion,
         tenantId,
         organisationId,
-        completionDto.userId
+        completionDto.userId,
       );
-      
+
       criteriaResults.push(result);
-      
+
       // Overall status is false if any criterion fails
       if (!result.status) {
         overallStatus = false;
@@ -450,8 +557,10 @@ export class AspireLeaderService {
     }
 
     const duration = Date.now() - startTime;
-    this.logger.log(`Lesson completion status checked in ${duration}ms for cohortId: ${completionDto.cohortId}`);
-    
+    this.logger.log(
+      `Lesson completion status checked in ${duration}ms for cohortId: ${completionDto.cohortId}`,
+    );
+
     return {
       overallStatus,
       criteriaResults,
@@ -501,7 +610,7 @@ export class AspireLeaderService {
 
     // Count completed lessons based on lesson configurations
     let completedLessons = 0;
-    
+
     for (const lesson of lessons) {
       const isCompleted = await this.isLessonCompletedForUser(
         lesson,
@@ -509,7 +618,7 @@ export class AspireLeaderService {
         tenantId,
         organisationId,
       );
-      
+
       if (isCompleted) {
         completedLessons++;
       }
@@ -521,7 +630,7 @@ export class AspireLeaderService {
       status,
       totalLessons,
       completedLessons,
-      message: status 
+      message: status
         ? `Criterion met: ${completedLessons}/${totalLessons} lessons completed (required: ${criterion.completionRule})`
         : `Criterion not met: ${completedLessons}/${totalLessons} lessons completed (required: ${criterion.completionRule})`,
     };
@@ -536,7 +645,27 @@ export class AspireLeaderService {
     tenantId: string,
     organisationId: string,
   ): Promise<boolean> {
-    // Handle resubmission logic
+    // Special handling for event format: always check status is completed
+    if (lesson.format === 'event') {
+      // For event format, find any attempt and check if status is completed
+      const eventAttempt = await this.findLessonAttempt({
+        lessonId: lesson.lessonId,
+        userId,
+        tenantId,
+        organisationId,
+        attempt: 1,
+      });
+
+      if (eventAttempt) {
+        const isCompleted = eventAttempt.status === TrackingStatus.COMPLETED;
+
+        return isCompleted;
+      }
+
+      return false;
+    }
+
+    // Handle resubmission logic for non-event formats
     if (lesson.allowResubmission) {
       // If resubmission is enabled, only one attempt should be considered
       // Query for the single attempt (attempt = 1)
@@ -551,11 +680,15 @@ export class AspireLeaderService {
       if (!singleAttempt) {
         return false; // No completed attempt
       }
-        return true;
-     
+      return true;
     } else {
       // If resubmission is disabled, query for specific attempt based on grading method
-      return this.querySpecificAttemptBasedOnGradingMethod(lesson, userId, tenantId, organisationId);
+      return this.querySpecificAttemptBasedOnGradingMethod(
+        lesson,
+        userId,
+        tenantId,
+        organisationId,
+      );
     }
   }
 
@@ -630,13 +763,17 @@ export class AspireLeaderService {
         }
 
         // Calculate average score
-        const totalScore = allAttempts.reduce((sum, attempt) => sum + (attempt.score || 0), 0);
+        const totalScore = allAttempts.reduce(
+          (sum, attempt) => sum + (attempt.score || 0),
+          0,
+        );
         const averageScore = totalScore / allAttempts.length;
 
         // Check if average meets passing criteria
         if (lesson.passingMarks && lesson.totalMarks) {
-          const passingPercentage = lesson.passingMarks / lesson.totalMarks * 100;
-          const averagePercentage = averageScore / lesson.totalMarks * 100;
+          const passingPercentage =
+            (lesson.passingMarks / lesson.totalMarks) * 100;
+          const averagePercentage = (averageScore / lesson.totalMarks) * 100;
           return averagePercentage >= passingPercentage;
         }
 
@@ -664,8 +801,11 @@ export class AspireLeaderService {
   /**
    * Evaluate if a single attempt meets completion criteria
    */
-  private evaluateAttemptCompletion(attempt: LessonTrack, lesson: Lesson): boolean {
-        // If no passing criteria, consider completed if status is completed
+  private evaluateAttemptCompletion(
+    attempt: LessonTrack,
+    lesson: Lesson,
+  ): boolean {
+    // If no passing criteria, consider completed if status is completed
     return attempt.status === TrackingStatus.COMPLETED;
   }
 
@@ -684,7 +824,7 @@ export class AspireLeaderService {
       lessonId: params.lessonId,
       userId: params.userId,
       tenantId: params.tenantId,
-      organisationId: params.organisationId
+      organisationId: params.organisationId,
     };
 
     // Add attempt filter if specified
@@ -731,7 +871,7 @@ export class AspireLeaderService {
     if (isCourseLevel) {
       switch (sortBy) {
         case 'progress':
-          return 'courseTrack.completedLessons'; 
+          return 'courseTrack.completedLessons';
         case 'lastAccessedDate':
           return 'courseTrack.lastAccessedDate';
         default:
@@ -742,7 +882,7 @@ export class AspireLeaderService {
         case 'progress':
           return 'lessonTrack.completionPercentage';
         case 'timeSpent':
-          return 'lessonTrack.timeSpent';        
+          return 'lessonTrack.timeSpent';
         default:
           return 'lessonTrack.completionPercentage';
       }
@@ -758,7 +898,9 @@ export class AspireLeaderService {
     organisationId: string,
   ): Promise<LessonTrack> {
     const startTime = Date.now();
-    this.logger.log(`Updating test progress for testId: ${updateTestProgressDto.testId}, userId: ${updateTestProgressDto.userId}`);
+    this.logger.log(
+      `Updating test progress for testId: ${updateTestProgressDto.testId}, userId: ${updateTestProgressDto.userId}`,
+    );
 
     try {
       // Find the media record by testId (stored in source column)
@@ -771,7 +913,9 @@ export class AspireLeaderService {
       });
 
       if (!media) {
-        throw new NotFoundException(`Media not found for testId: ${updateTestProgressDto.testId}`);
+        throw new NotFoundException(
+          `Media not found for testId: ${updateTestProgressDto.testId}`,
+        );
       }
 
       // Find the lesson that uses this media
@@ -786,7 +930,9 @@ export class AspireLeaderService {
       });
 
       if (!lesson) {
-        throw new NotFoundException(`Lesson not found for mediaId: ${media.mediaId}`);
+        throw new NotFoundException(
+          `Lesson not found for mediaId: ${media.mediaId}`,
+        );
       }
 
       // Determine the correct attempt based on lesson configuration
@@ -806,7 +952,9 @@ export class AspireLeaderService {
 
         if (!existingTrack) {
           // Create new attempt if none exists
-          throw new NotFoundException(`No lesson tracking found for TestId: ${updateTestProgressDto.testId} and userId: ${updateTestProgressDto.userId}`);
+          throw new NotFoundException(
+            `No lesson tracking found for TestId: ${updateTestProgressDto.testId} and userId: ${updateTestProgressDto.userId}`,
+          );
         } else {
           lessonTrack = existingTrack;
         }
@@ -826,7 +974,9 @@ export class AspireLeaderService {
         });
 
         if (!latestAttempt) {
-          throw new NotFoundException(`No lesson tracking found for lessonId: ${lesson.lessonId} and userId: ${updateTestProgressDto.userId}`);
+          throw new NotFoundException(
+            `No lesson tracking found for lessonId: ${lesson.lessonId} and userId: ${updateTestProgressDto.userId}`,
+          );
         }
 
         lessonTrack = latestAttempt;
@@ -834,27 +984,44 @@ export class AspireLeaderService {
       }
 
       // Update the lesson track with test results
+      // Determine status based on result: COMPLETED for PASS, SUBMITTED for FAIL
+      // This ensures that when marks are updated and result changes from PASS to FAIL,
+      // the status correctly changes from COMPLETED to SUBMITTED
+      // Result can be 'P'/'p' (PASS) or 'F'/'f' (FAIL) from assessment service
+      const resultLower = updateTestProgressDto.result?.toLowerCase();
+      const status =
+        resultLower === 'pass' || resultLower === 'p'
+          ? TrackingStatus.COMPLETED
+          : TrackingStatus.SUBMITTED;
+
       const updateData: Partial<LessonTrack> = {
         score: updateTestProgressDto.score,
-        status: TrackingStatus.COMPLETED,
+        status: status,
         updatedBy: updateTestProgressDto.reviewedBy,
         updatedAt: new Date(),
         completionPercentage: 100,
-
       };
       // Update the lesson track
       Object.assign(lessonTrack, updateData);
-      const updatedLessonTrack = await this.lessonTrackRepository.save(lessonTrack);
+      const updatedLessonTrack =
+        await this.lessonTrackRepository.save(lessonTrack);
 
-    // Update course and module tracking if lesson is completed
-    if (updatedLessonTrack.courseId) {
-      await this.trackingService.updateCourseAndModuleTracking(updatedLessonTrack, tenantId, organisationId);
-    }
+      // Update course and module tracking if lesson is completed
+      if (updatedLessonTrack.courseId) {
+        await this.trackingService.updateCourseAndModuleTracking(
+          updatedLessonTrack,
+          tenantId,
+          organisationId,
+        );
+      }
 
       return updatedLessonTrack;
     } catch (error) {
-      this.logger.error(`Error updating test progress: ${error.message}`, error.stack);
+      this.logger.error(
+        `Error updating test progress: ${error.message}`,
+        error.stack,
+      );
       throw error;
     }
   }
-} 
+}

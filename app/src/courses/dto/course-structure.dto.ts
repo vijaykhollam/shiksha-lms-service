@@ -85,4 +85,42 @@ export class CourseStructureDto {
   @ValidateNested({ each: true })
   @Type(() => ModuleStructureDto)
   modules: ModuleStructureDto[];
+}
+
+export class CourseOrderDto {
+  @ApiProperty({
+    description: 'Course ID',
+    example: '123e4567-e89b-12d3-a456-426614174000',
+  })
+  @IsNotEmpty({ message: VALIDATION_MESSAGES.COMMON.REQUIRED('Course ID') })
+  @IsUUID('4', { message: VALIDATION_MESSAGES.COMMON.UUID('Course ID') })
+  courseId: string;
+
+  @ApiProperty({
+    description: 'Order/position of the course',
+    example: 1,
+    minimum: 0,
+  })
+  @IsNotEmpty({ message: VALIDATION_MESSAGES.COMMON.REQUIRED('Course order') })
+  @IsNumber({}, { message: VALIDATION_MESSAGES.COMMON.NUMBER('Course order') })
+  @Min(0, { message: VALIDATION_MESSAGES.COMMON.MIN_VALUE('Course order', 0) })
+  order: number;
+}
+
+export class BulkCourseOrderDto {
+  @ApiProperty({
+    description: 'Courses with their order',
+    type: [CourseOrderDto],
+    example: [
+      { courseId: '123e4567-e89b-12d3-a456-426614174000', order: 1 },
+      { courseId: '123e4567-e89b-12d3-a456-426614174001', order: 2 },
+      { courseId: '123e4567-e89b-12d3-a456-426614174002', order: 3 }
+    ],
+  })
+  @IsNotEmpty({ message: VALIDATION_MESSAGES.COMMON.REQUIRED('Courses') })
+  @IsArray({ message: VALIDATION_MESSAGES.COMMON.ARRAY('Courses') })
+  @ArrayMinSize(1, { message: VALIDATION_MESSAGES.COMMON.MIN_ARRAY_LENGTH('Courses', 1) })
+  @ValidateNested({ each: true })
+  @Type(() => CourseOrderDto)
+  courses: CourseOrderDto[];
 } 

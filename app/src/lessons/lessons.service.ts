@@ -8,12 +8,20 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, FindOneOptions, FindOptionsWhere, In } from 'typeorm';
 import axios from 'axios';
-import { Lesson, LessonStatus, AttemptsGradeMethod, LessonFormat, LessonSubFormat } from './entities/lesson.entity';
+import {
+  Lesson,
+  LessonStatus,
+  AttemptsGradeMethod,
+  LessonFormat,
+} from './entities/lesson.entity';
 import { Course, CourseStatus } from '../courses/entities/course.entity';
 import { Module, ModuleStatus } from '../modules/entities/module.entity';
 import { Media, MediaStatus } from '../media/entities/media.entity';
 import { LessonTrack } from '../tracking/entities/lesson-track.entity';
-import { UserEnrollment, EnrollmentStatus } from '../enrollments/entities/user-enrollment.entity';
+import {
+  UserEnrollment,
+  EnrollmentStatus,
+} from '../enrollments/entities/user-enrollment.entity';
 import { CreateLessonDto } from './dto/create-lesson.dto';
 import { UpdateLessonDto } from './dto/update-lesson.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
@@ -46,9 +54,8 @@ export class LessonsService {
     private readonly cacheService: CacheService,
     private readonly configService: ConfigService,
     private readonly cacheConfig: CacheConfigService,
-    private readonly orderingService: OrderingService
+    private readonly orderingService: OrderingService,
   ) {}
-  
 
   /**
    * Create a new lesson with optional course association
@@ -63,14 +70,14 @@ export class LessonsService {
     createLessonDto: CreateLessonDto,
     userId: string,
     tenantId: string,
-    organisationId: string
+    organisationId: string,
   ): Promise<Lesson> {
     try {
       // Validate course and module existence if provided
       if (createLessonDto.courseId) {
         // Check if course exists
         const course = await this.courseRepository.findOne({
-          where: { 
+          where: {
             courseId: createLessonDto.courseId,
             status: Not(CourseStatus.ARCHIVED),
             tenantId,
@@ -85,7 +92,7 @@ export class LessonsService {
         // If moduleId is provided, validate it belongs to the course
         if (createLessonDto.moduleId) {
           const module = await this.moduleRepository.findOne({
-            where: { 
+            where: {
               moduleId: createLessonDto.moduleId,
               courseId: createLessonDto.courseId,
               status: Not(ModuleStatus.ARCHIVED),
@@ -95,7 +102,11 @@ export class LessonsService {
           });
 
           if (!module) {
-            throw new NotFoundException(RESPONSE_MESSAGES.ERROR.MODULE_NOT_FOUND_IN_COURSE(createLessonDto.moduleId));
+            throw new NotFoundException(
+              RESPONSE_MESSAGES.ERROR.MODULE_NOT_FOUND_IN_COURSE(
+                createLessonDto.moduleId,
+              ),
+            );
           }
         }
       }
@@ -105,55 +116,56 @@ export class LessonsService {
           createLessonDto.title,
           this.lessonRepository,
           tenantId,
-          organisationId
+          organisationId,
         );
-      }else{
+      } else {
         // Check if the alias already exists
-        const whereClause: any = { 
+        const whereClause: any = {
           alias: createLessonDto.alias,
           status: Not(LessonStatus.ARCHIVED),
         };
-      
-      // Add tenant and org filters if they exist
-      if (tenantId) {
-        whereClause.tenantId = tenantId;
-      }
-      
-      if (organisationId) {
-        whereClause.organisationId = organisationId;
-      }
-      
-      const existingLesson = await this.lessonRepository.findOne({
-        where: whereClause,
-      });
-      
 
-      if (existingLesson) {
-        // Generate a unique alias since it already exists
-        const originalAlias = createLessonDto.alias || createLessonDto.title || 'untitled-lesson';
-        createLessonDto.alias = await HelperUtil.generateUniqueAliasWithRepo(
-          originalAlias,
-          this.lessonRepository,
-          tenantId,
-          organisationId
-        );
-          this.logger.log(`Alias '${originalAlias}' already exists. Generated new alias: ${createLessonDto.alias}`);
+        // Add tenant and org filters if they exist
+        if (tenantId) {
+          whereClause.tenantId = tenantId;
+        }
+
+        if (organisationId) {
+          whereClause.organisationId = organisationId;
+        }
+
+        const existingLesson = await this.lessonRepository.findOne({
+          where: whereClause,
+        });
+
+        if (existingLesson) {
+          // Generate a unique alias since it already exists
+          const originalAlias =
+            createLessonDto.alias || createLessonDto.title || 'untitled-lesson';
+          createLessonDto.alias = await HelperUtil.generateUniqueAliasWithRepo(
+            originalAlias,
+            this.lessonRepository,
+            tenantId,
+            organisationId,
+          );
+          this.logger.log(
+            `Alias '${originalAlias}' already exists. Generated new alias: ${createLessonDto.alias}`,
+          );
         }
       }
 
-     
       let mediaId: string;
       let storage: string = 'local';
-      if(createLessonDto.format === LessonFormat.DOCUMENT){
+      if (createLessonDto.format === LessonFormat.DOCUMENT) {
         storage = this.configService.get('cloud_storage_provider') || 'local';
       }
-      
+
       // Create new media for all formats
       const mediaData: Partial<Media> = {
         tenantId: tenantId,
         organisationId: organisationId,
         format: createLessonDto.format,
-        subFormat: createLessonDto.mediaContentSubFormat, 
+        subFormat: createLessonDto.mediaContentSubFormat,
         source: createLessonDto.mediaContentSource || undefined,
         path: createLessonDto.mediaContentPath || undefined,
         storage: storage,
@@ -166,12 +178,16 @@ export class LessonsService {
       mediaId = savedMedia.mediaId;
       // Get next ordering if not provided
       let ordering = createLessonDto.ordering;
-      if ((ordering === undefined || ordering === null) && createLessonDto.moduleId && createLessonDto.courseId) {
+      if (
+        (ordering === undefined || ordering === null) &&
+        createLessonDto.moduleId &&
+        createLessonDto.courseId
+      ) {
         ordering = await this.orderingService.getNextLessonOrder(
           createLessonDto.moduleId,
           createLessonDto.courseId,
           tenantId,
-          organisationId
+          organisationId,
         );
       } else if (ordering === undefined || ordering === null) {
         ordering = 0; // Default ordering if no moduleId
@@ -188,11 +204,16 @@ export class LessonsService {
         image: createLessonDto.image,
         description: createLessonDto.description,
         status: createLessonDto.status || LessonStatus.PUBLISHED,
-        startDatetime: createLessonDto.startDatetime ? new Date(createLessonDto.startDatetime) : undefined,
-        endDatetime: createLessonDto.endDatetime ? new Date(createLessonDto.endDatetime) : undefined,
+        startDatetime: createLessonDto.startDatetime
+          ? new Date(createLessonDto.startDatetime)
+          : undefined,
+        endDatetime: createLessonDto.endDatetime
+          ? new Date(createLessonDto.endDatetime)
+          : undefined,
         storage: storage,
         noOfAttempts: createLessonDto.noOfAttempts || 0,
-        attemptsGrade: createLessonDto.attemptsGrade || AttemptsGradeMethod.LAST_ATTEMPT,
+        attemptsGrade:
+          createLessonDto.attemptsGrade || AttemptsGradeMethod.LAST_ATTEMPT,
         prerequisites: createLessonDto.prerequisites,
         idealTime: createLessonDto.idealTime,
         resume: createLessonDto.resume,
@@ -209,7 +230,7 @@ export class LessonsService {
         moduleId: createLessonDto.moduleId,
         sampleLesson: createLessonDto.sampleLesson,
         considerForPassing: createLessonDto.considerForPassing,
-        allowResubmission: createLessonDto.allowResubmission
+        allowResubmission: createLessonDto.allowResubmission,
       };
 
       // Validate associated lesson if provided
@@ -218,9 +239,9 @@ export class LessonsService {
           where: {
             lessonId: createLessonDto.associatedLesson,
             tenantId,
-            organisationId
+            organisationId,
           },
-          select: ['lessonId', 'parentId']
+          select: ['lessonId', 'parentId'],
         });
 
         if (!associatedLesson) {
@@ -228,7 +249,9 @@ export class LessonsService {
         }
 
         if (associatedLesson.parentId) {
-          throw new BadRequestException(RESPONSE_MESSAGES.ERROR.ASSOCIATED_LESSON_ALREADY_HAS_PARENT);
+          throw new BadRequestException(
+            RESPONSE_MESSAGES.ERROR.ASSOCIATED_LESSON_ALREADY_HAS_PARENT,
+          );
         }
       }
 
@@ -239,28 +262,46 @@ export class LessonsService {
       // If associatedLessonId is provided, update that lesson's parentId to point to this new lesson
       if (createLessonDto.associatedLesson) {
         await this.lessonRepository.update(
-          { 
+          {
             lessonId: createLessonDto.associatedLesson,
             tenantId,
-            organisationId 
+            organisationId,
           },
-          { 
+          {
             parentId: savedLesson.lessonId,
             updatedBy: userId,
-            updatedAt: new Date()
-          }
+            updatedAt: new Date(),
+          },
         );
-        
+
         // Invalidate cache for the associated lesson
-        const associatedLessonKey = this.cacheConfig.getLessonKey(createLessonDto.associatedLesson, tenantId, organisationId);
+        const associatedLessonKey = this.cacheConfig.getLessonKey(
+          createLessonDto.associatedLesson,
+          tenantId,
+          organisationId,
+        );
         await this.cacheService.del(associatedLessonKey);
       }
 
       // Cache the new lesson with proper key and TTL
-      const lessonKey = this.cacheConfig.getLessonKey(savedLesson.lessonId, tenantId, organisationId);
+      const lessonKey = this.cacheConfig.getLessonKey(
+        savedLesson.lessonId,
+        tenantId,
+        organisationId,
+      );
       await Promise.all([
-        this.cacheService.set(lessonKey, savedLesson, this.cacheConfig.LESSON_TTL),
-        this.cacheService.invalidateLesson(savedLesson.lessonId, savedLesson.moduleId, savedLesson.courseId, tenantId, organisationId),
+        this.cacheService.set(
+          lessonKey,
+          savedLesson,
+          this.cacheConfig.LESSON_TTL,
+        ),
+        this.cacheService.invalidateLesson(
+          savedLesson.lessonId,
+          savedLesson.moduleId,
+          savedLesson.courseId,
+          tenantId,
+          organisationId,
+        ),
       ]);
       return savedLesson;
     } catch (error) {
@@ -269,7 +310,6 @@ export class LessonsService {
     }
   }
 
-  
   /**
    * Find all lessons with pagination and filters
    * @param tenantId The tenant ID for data isolation
@@ -288,78 +328,109 @@ export class LessonsService {
     organisationId: string,
     paginationDto: PaginationDto,
     searchDto: SearchLessonDto,
-  ): Promise<{ totalElements: number; offset: number; limit: number; lessons: Lesson[] }> {
+  ): Promise<{
+    totalElements: number;
+    offset: number;
+    limit: number;
+    lessons: Lesson[];
+  }> {
     try {
       const { limit = 10 } = paginationDto;
       const offset = paginationDto.skip || 0;
-      
+
       // Generate cache key using standardized pattern - include all filters for proper caching
-      const cacheKey = this.cacheConfig.getLessonPattern(tenantId, organisationId) +
+      const cacheKey =
+        this.cacheConfig.getLessonPattern(tenantId, organisationId) +
         (searchDto.cohortId ? `:cohortId:${searchDto.cohortId}` : '') +
         (searchDto.courseId ? `:courseId:${searchDto.courseId}` : '') +
         (searchDto.moduleId ? `:moduleId:${searchDto.moduleId}` : '') +
         (searchDto.format ? `:format:${searchDto.format}` : '') +
         (searchDto.subFormat ? `:subFormat:${searchDto.subFormat}` : '') +
-        (searchDto.status ? `:status:${searchDto.status}` : '') +       
+        (searchDto.status ? `:status:${searchDto.status}` : '') +
         (searchDto.query ? `:query:${searchDto.query}` : '') +
         `:offset:${offset}:limit:${limit}`;
 
       // Try to get from cache first
-      const cachedResult = await this.cacheService.get<{ totalElements: number; offset: number; limit: number; lessons: Lesson[] }>(cacheKey);
+      const cachedResult = await this.cacheService.get<{
+        totalElements: number;
+        offset: number;
+        limit: number;
+        lessons: Lesson[];
+      }>(cacheKey);
       if (cachedResult) {
         return cachedResult;
-      } 
+      }
 
       // Execute query with pagination and joins to ensure only published courses and modules
-      let queryBuilder = this.lessonRepository.createQueryBuilder('lesson')
+      let queryBuilder = this.lessonRepository
+        .createQueryBuilder('lesson')
         .leftJoinAndSelect('lesson.media', 'media')
-        .where('lesson.status != :archivedStatus', { archivedStatus: LessonStatus.ARCHIVED })
+        .where('lesson.status != :archivedStatus', {
+          archivedStatus: LessonStatus.ARCHIVED,
+        })
         .andWhere('lesson.tenantId = :tenantId', { tenantId })
-        .andWhere('lesson.organisationId = :organisationId', { organisationId })
-        
+        .andWhere('lesson.organisationId = :organisationId', {
+          organisationId,
+        });
+
       // Add optional filters
       if (searchDto.status) {
-        queryBuilder = queryBuilder.andWhere('lesson.status = :status', { status: searchDto.status });
+        queryBuilder = queryBuilder.andWhere('lesson.status = :status', {
+          status: searchDto.status,
+        });
       }
 
       if (searchDto.format) {
-        queryBuilder = queryBuilder.andWhere('lesson.format = :format', { format: searchDto.format });
+        queryBuilder = queryBuilder.andWhere('lesson.format = :format', {
+          format: searchDto.format,
+        });
       }
 
       if (searchDto.subFormat) {
-        queryBuilder = queryBuilder.andWhere('media.subFormat = :subFormat', { subFormat: searchDto.subFormat });
+        queryBuilder = queryBuilder.andWhere('media.subFormat = :subFormat', {
+          subFormat: searchDto.subFormat,
+        });
       }
 
       // Add search query filter for title and description
       if (searchDto.query) {
         queryBuilder = queryBuilder.andWhere(
           '(lesson.title ILIKE :query OR lesson.description ILIKE :query)',
-          { query: `%${searchDto.query}%` }
+          { query: `%${searchDto.query}%` },
         );
       }
 
       // Add course ID filter
       if (searchDto.courseId || searchDto.cohortId) {
-        queryBuilder = queryBuilder.leftJoin('lesson.course', 'course')
-        queryBuilder = queryBuilder.andWhere('course.status != :courseStatus', { courseStatus: CourseStatus.ARCHIVED })
+        queryBuilder = queryBuilder.leftJoin('lesson.course', 'course');
+        queryBuilder = queryBuilder.andWhere('course.status != :courseStatus', {
+          courseStatus: CourseStatus.ARCHIVED,
+        });
         // Add cohort filter (search in course.params.cohort)
         if (searchDto.cohortId) {
           console.log('cohortId', searchDto.cohortId);
           queryBuilder = queryBuilder.andWhere(
             "course.params->>'cohortId' = :cohortId",
-            { cohortId: searchDto.cohortId }
+            { cohortId: searchDto.cohortId },
           );
         }
         if (searchDto.courseId) {
-          queryBuilder = queryBuilder.andWhere('lesson.courseId = :courseId', { courseId: searchDto.courseId });
+          queryBuilder = queryBuilder.andWhere('lesson.courseId = :courseId', {
+            courseId: searchDto.courseId,
+          });
         }
       }
 
       // Add module ID filter
       if (searchDto.moduleId) {
-        queryBuilder = queryBuilder.leftJoin('lesson.module', 'module')
-        queryBuilder = queryBuilder.andWhere('(module.status != :moduleStatus OR module.status IS NULL)', { moduleStatus: ModuleStatus.ARCHIVED });
-        queryBuilder = queryBuilder.andWhere('lesson.moduleId = :moduleId', { moduleId: searchDto.moduleId });
+        queryBuilder = queryBuilder.leftJoin('lesson.module', 'module');
+        queryBuilder = queryBuilder.andWhere(
+          '(module.status != :moduleStatus OR module.status IS NULL)',
+          { moduleStatus: ModuleStatus.ARCHIVED },
+        );
+        queryBuilder = queryBuilder.andWhere('lesson.moduleId = :moduleId', {
+          moduleId: searchDto.moduleId,
+        });
       }
 
       const [lessons, totalElements] = await queryBuilder
@@ -371,7 +442,11 @@ export class LessonsService {
       const result = { totalElements, offset, limit, lessons };
 
       // Cache the result
-      await this.cacheService.set(cacheKey, result, this.cacheConfig.LESSON_TTL);
+      await this.cacheService.set(
+        cacheKey,
+        result,
+        this.cacheConfig.LESSON_TTL,
+      );
 
       return result;
     } catch (error) {
@@ -389,23 +464,27 @@ export class LessonsService {
   async findOne(
     lessonId: string,
     tenantId: string,
-    organisationId: string
+    organisationId: string,
   ): Promise<Lesson> {
     // Check cache first
-    const cacheKey = this.cacheConfig.getLessonKey(lessonId, tenantId, organisationId);
+    const cacheKey = this.cacheConfig.getLessonKey(
+      lessonId,
+      tenantId,
+      organisationId,
+    );
     const cachedLesson = await this.cacheService.get<Lesson>(cacheKey);
     if (cachedLesson) {
       return cachedLesson;
     }
 
     // Build where clause with required filters
-    const whereClause: any = { 
-      lessonId, 
+    const whereClause: any = {
+      lessonId,
       tenantId: tenantId,
       organisationId: organisationId,
-      status: Not(LessonStatus.ARCHIVED) 
+      status: Not(LessonStatus.ARCHIVED),
     };
-        
+
     const lesson = await this.lessonRepository.findOne({
       where: whereClause,
       relations: ['media', 'associatedFiles.media', 'associatedLesson'],
@@ -430,42 +509,46 @@ export class LessonsService {
   async findByModule(
     moduleId: string,
     tenantId: string,
-    organisationId: string
+    organisationId: string,
   ): Promise<Lesson[]> {
     // Check cache first
-    const cacheKey = this.cacheConfig.getModuleLessonsPattern(moduleId, tenantId, organisationId);
+    const cacheKey = this.cacheConfig.getModuleLessonsPattern(
+      moduleId,
+      tenantId,
+      organisationId,
+    );
     const cachedLessons = await this.cacheService.get<Lesson[]>(cacheKey);
     if (cachedLessons) {
       return cachedLessons;
     }
 
     // Build where clause for module validation
-    const moduleWhereClause: any = { 
-      moduleId, 
+    const moduleWhereClause: any = {
+      moduleId,
       status: Not(ModuleStatus.ARCHIVED as any),
       tenantId: tenantId,
-      organisationId: organisationId
+      organisationId: organisationId,
     };
-    
+
     // Validate module exists with tenant/org filtering
     const module = await this.moduleRepository.findOne({
       where: moduleWhereClause,
     });
-    
+
     if (!module) {
       throw new NotFoundException(RESPONSE_MESSAGES.ERROR.MODULE_NOT_FOUND);
     }
 
     // Get all lessons for this module with filtering
     const lessons = await this.lessonRepository.find({
-      where: { 
-        moduleId, 
+      where: {
+        moduleId,
         status: Not(LessonStatus.ARCHIVED),
         tenantId: tenantId,
-        organisationId: organisationId
+        organisationId: organisationId,
       },
       order: { ordering: 'ASC' },
-      relations: ['media','associatedFiles.media'],
+      relations: ['media', 'associatedFiles.media'],
     });
 
     // Cache the lessons
@@ -483,11 +566,15 @@ export class LessonsService {
   async findByTestId(
     testId: string,
     tenantId: string,
-    organisationId: string
+    organisationId: string,
   ): Promise<Lesson> {
     try {
       // Check cache first
-      const cacheKey = this.cacheConfig.getLessonByTestPattern(testId, tenantId, organisationId);
+      const cacheKey = this.cacheConfig.getLessonByTestPattern(
+        testId,
+        tenantId,
+        organisationId,
+      );
       const cachedLesson = await this.cacheService.get<Lesson>(cacheKey);
       if (cachedLesson) {
         return cachedLesson;
@@ -495,11 +582,11 @@ export class LessonsService {
 
       // Find media with the testId as source
       const media = await this.mediaRepository.findOne({
-        where: { 
+        where: {
           source: testId,
           status: Not(MediaStatus.ARCHIVED),
           tenantId: tenantId,
-          organisationId: organisationId
+          organisationId: organisationId,
         },
       });
 
@@ -514,13 +601,13 @@ export class LessonsService {
         .leftJoinAndSelect('lesson.module', 'module')
         .select([
           'lesson.lessonId',
-          'module.moduleId', 
+          'module.moduleId',
           'course.courseId',
           'lesson.title',
           'lesson.format',
           'lesson.status',
           'course.title',
-          'module.title'
+          'module.title',
         ])
         .where('lesson.mediaId = :mediaId', { mediaId: media.mediaId })
         .andWhere('lesson.status != :status', { status: LessonStatus.ARCHIVED })
@@ -533,15 +620,24 @@ export class LessonsService {
       }
 
       // Cache the lesson
-      await this.cacheService.set(cacheKey, lesson, this.cacheConfig.LESSON_TTL);
+      await this.cacheService.set(
+        cacheKey,
+        lesson,
+        this.cacheConfig.LESSON_TTL,
+      );
 
       return lesson;
     } catch (error) {
-      this.logger.error(`Error finding lesson by test ID: ${error.message}`, error.stack);
+      this.logger.error(
+        `Error finding lesson by test ID: ${error.message}`,
+        error.stack,
+      );
       if (error instanceof NotFoundException) {
         throw error;
       }
-      throw new InternalServerErrorException(RESPONSE_MESSAGES.ERROR.ERROR_RETRIEVING_LESSONS);
+      throw new InternalServerErrorException(
+        RESPONSE_MESSAGES.ERROR.ERROR_RETRIEVING_LESSONS,
+      );
     }
   }
 
@@ -558,7 +654,7 @@ export class LessonsService {
     updateLessonDto: UpdateLessonDto,
     userId: string,
     tenantId: string,
-    organisationId: string
+    organisationId: string,
   ): Promise<Lesson> {
     try {
       const lesson = await this.findOne(lessonId, tenantId, organisationId);
@@ -571,7 +667,7 @@ export class LessonsService {
       if (updateLessonDto.courseId) {
         // Check if course exists
         const course = await this.courseRepository.findOne({
-          where: { 
+          where: {
             courseId: updateLessonDto.courseId,
             status: Not(CourseStatus.ARCHIVED),
             tenantId,
@@ -586,7 +682,7 @@ export class LessonsService {
         // If moduleId is provided, validate it belongs to the course
         if (updateLessonDto.moduleId) {
           const module = await this.moduleRepository.findOne({
-            where: { 
+            where: {
               moduleId: updateLessonDto.moduleId,
               courseId: updateLessonDto.courseId,
               status: Not(ModuleStatus.ARCHIVED),
@@ -596,69 +692,88 @@ export class LessonsService {
           });
 
           if (!module) {
-            throw new NotFoundException(RESPONSE_MESSAGES.ERROR.MODULE_NOT_FOUND_IN_COURSE(updateLessonDto.moduleId));
+            throw new NotFoundException(
+              RESPONSE_MESSAGES.ERROR.MODULE_NOT_FOUND_IN_COURSE(
+                updateLessonDto.moduleId,
+              ),
+            );
           }
         }
       }
 
       // Check if lesson has a checked out status (if that property exists)
       if (updateLessonDto.checkedOut !== undefined) {
-        throw new BadRequestException(RESPONSE_MESSAGES.ERROR.LESSON_CHECKED_OUT);
+        throw new BadRequestException(
+          RESPONSE_MESSAGES.ERROR.LESSON_CHECKED_OUT,
+        );
       }
 
       // Parse JSON params if they are provided as a string
-      if (updateLessonDto.params && typeof updateLessonDto.params === 'string') {
+      if (
+        updateLessonDto.params &&
+        typeof updateLessonDto.params === 'string'
+      ) {
         try {
           updateLessonDto.params = JSON.parse(updateLessonDto.params);
         } catch (error) {
           this.logger.error(`Error parsing params JSON: ${error.message}`);
-          throw new BadRequestException(RESPONSE_MESSAGES.ERROR.INVALID_PARAMS_FORMAT);
+          throw new BadRequestException(
+            RESPONSE_MESSAGES.ERROR.INVALID_PARAMS_FORMAT,
+          );
         }
       }
 
-             // Get the current media
-        const currentMedia = lesson.mediaId ? await this.mediaRepository.findOne({
-          where: { mediaId: lesson.mediaId }
-        }) : null;
-        
-          // For other formats
-          // Validate format matches lesson format
-          if (updateLessonDto.format && updateLessonDto.format !== lesson.format) {
-            throw new BadRequestException(RESPONSE_MESSAGES.ERROR.CANNOT_CHANGE_FORMAT);
-          }
+      // Get the current media
+      const currentMedia = lesson.mediaId
+        ? await this.mediaRepository.findOne({
+            where: { mediaId: lesson.mediaId },
+          })
+        : null;
 
-          if (!currentMedia) {
-            throw new NotFoundException(RESPONSE_MESSAGES.ERROR.MEDIA_NOT_FOUND);
-          }
+      // For other formats
+      // Validate format matches lesson format
+      if (updateLessonDto.format && updateLessonDto.format !== lesson.format) {
+        throw new BadRequestException(
+          RESPONSE_MESSAGES.ERROR.CANNOT_CHANGE_FORMAT,
+        );
+      }
 
-          let storage: string = 'local';
-          if(updateLessonDto.format === LessonFormat.DOCUMENT){
-            storage = this.configService.get('cloud_storage_provider') || 'local';
-          }
+      if (!currentMedia) {
+        throw new NotFoundException(RESPONSE_MESSAGES.ERROR.MEDIA_NOT_FOUND);
+      }
 
-          // Update the media content
-          await this.mediaRepository.update(currentMedia.mediaId, {
-            tenantId: tenantId,
-            organisationId: organisationId,
-            format: lesson.format as LessonFormat,
-            subFormat: updateLessonDto.mediaContentSubFormat,
-            source: updateLessonDto.mediaContentSource,
-            path: updateLessonDto.mediaContentPath,
-            storage: storage,
-            updatedBy: userId,
-            updatedAt: new Date()
-          });
-     
+      let storage: string = 'local';
+      if (updateLessonDto.format === LessonFormat.DOCUMENT) {
+        storage = this.configService.get('cloud_storage_provider') || 'local';
+      }
+
+      // Update the media content
+      await this.mediaRepository.update(currentMedia.mediaId, {
+        tenantId: tenantId,
+        organisationId: organisationId,
+        format: lesson.format as LessonFormat,
+        subFormat: updateLessonDto.mediaContentSubFormat,
+        source: updateLessonDto.mediaContentSource,
+        path: updateLessonDto.mediaContentPath,
+        storage: storage,
+        updatedBy: userId,
+        updatedAt: new Date(),
+      });
+
       // If title is changed but no alias provided, generate one from the title
-      if (updateLessonDto.title && updateLessonDto.title !== lesson.title && !updateLessonDto.alias) {
+      if (
+        updateLessonDto.title &&
+        updateLessonDto.title !== lesson.title &&
+        !updateLessonDto.alias
+      ) {
         updateLessonDto.alias = await HelperUtil.generateUniqueAliasWithRepo(
           updateLessonDto.title,
           this.lessonRepository,
           tenantId || '',
-          organisationId
+          organisationId,
         );
       }
-      
+
       // Check for alias uniqueness if alias is being updated
       if (updateLessonDto.alias && updateLessonDto.alias !== lesson.alias) {
         const whereClause: any = {
@@ -666,23 +781,26 @@ export class LessonsService {
           lessonId: Not(lessonId),
           status: Not(LessonStatus.ARCHIVED),
           tenantId: tenantId,
-          organisationId: organisationId
+          organisationId: organisationId,
         };
-        
+
         const existingLesson = await this.lessonRepository.findOne({
           where: whereClause,
         });
-        
+
         // If the alias already exists, generate a new unique one
         if (existingLesson) {
-          const originalAlias = updateLessonDto.alias || updateLessonDto.title || 'untitled-lesson';
+          const originalAlias =
+            updateLessonDto.alias || updateLessonDto.title || 'untitled-lesson';
           updateLessonDto.alias = await HelperUtil.generateUniqueAliasWithRepo(
             originalAlias,
             this.lessonRepository,
             tenantId || '',
-            organisationId
+            organisationId,
           );
-          this.logger.log(`Alias '${originalAlias}' already exists. Generated new alias: ${updateLessonDto.alias}`);
+          this.logger.log(
+            `Alias '${originalAlias}' already exists. Generated new alias: ${updateLessonDto.alias}`,
+          );
         }
       }
 
@@ -691,83 +809,90 @@ export class LessonsService {
         updatedBy: userId,
         updatedAt: new Date(),
       };
-      
+
       // Map fields that exist in both DTO and entity
       if (updateLessonDto.title !== undefined) {
         updateData.title = updateLessonDto.title;
       }
-      
+
       if (updateLessonDto.description !== undefined) {
         updateData.description = updateLessonDto.description;
       }
-      
+
       if (updateLessonDto.status !== undefined) {
         updateData.status = updateLessonDto.status;
       }
-          
+
       if (updateLessonDto.alias !== undefined) {
         updateData.alias = updateLessonDto.alias;
       }
-      
-      if (updateLessonDto.startDatetime !== undefined) {
+      if (
+        updateLessonDto.startDatetime !== undefined &&
+        updateLessonDto.startDatetime !== null &&
+        updateLessonDto.startDatetime !== ''
+      ) {
         updateData.startDatetime = new Date(updateLessonDto.startDatetime);
       }
-      
-      if (updateLessonDto.endDatetime !== undefined) {
+
+      if (
+        updateLessonDto.endDatetime !== undefined &&
+        updateLessonDto.endDatetime !== null &&
+        updateLessonDto.endDatetime !== ''
+      ) {
         updateData.endDatetime = new Date(updateLessonDto.endDatetime);
       }
-      
+
       if (updateLessonDto.storage !== undefined) {
         updateData.storage = updateLessonDto.storage;
       }
-      
+
       if (updateLessonDto.noOfAttempts !== undefined) {
         updateData.noOfAttempts = updateLessonDto.noOfAttempts;
       }
-      
+
       if (updateLessonDto.attemptsGrade !== undefined) {
         updateData.attemptsGrade = updateLessonDto.attemptsGrade;
       }
-      
+
       if (updateLessonDto.prerequisites !== undefined) {
         updateData.prerequisites = updateLessonDto.prerequisites;
       }
-      
+
       if (updateLessonDto.idealTime !== undefined) {
         updateData.idealTime = updateLessonDto.idealTime;
       }
-      
+
       if (updateLessonDto.resume !== undefined) {
         updateData.resume = updateLessonDto.resume;
       }
-      
+
       if (updateLessonDto.totalMarks !== undefined) {
         updateData.totalMarks = updateLessonDto.totalMarks;
       }
-      
+
       if (updateLessonDto.passingMarks !== undefined) {
         updateData.passingMarks = updateLessonDto.passingMarks;
       }
-      
+
       // Handle subFormat field mapping
       if (updateLessonDto.mediaContentSubFormat !== undefined) {
         updateData.subFormat = updateLessonDto.mediaContentSubFormat;
       }
-      
+
       // Handle image field mapping
       if (updateLessonDto.image) {
         updateData.image = updateLessonDto.image;
       }
-      
+
       if (updateLessonDto.params !== undefined) {
         updateData.params = updateLessonDto.params;
       }
-      
+
       // Handle course and module association fields
       if (updateLessonDto.courseId !== undefined) {
         updateData.courseId = updateLessonDto.courseId;
       }
-      
+
       if (updateLessonDto.moduleId !== undefined) {
         updateData.moduleId = updateLessonDto.moduleId;
       }
@@ -782,24 +907,32 @@ export class LessonsService {
 
       if (updateLessonDto.allowResubmission !== undefined) {
         updateData.allowResubmission = updateLessonDto.allowResubmission;
-      } 
+      }
 
       // Validate associated lesson if provided (and not null)
-      if (updateLessonDto.associatedLesson !== undefined && updateLessonDto.associatedLesson !== null) {
+      if (
+        updateLessonDto.associatedLesson !== undefined &&
+        updateLessonDto.associatedLesson !== null
+      ) {
         const associatedLesson = await this.lessonRepository.findOne({
           where: {
             lessonId: updateLessonDto.associatedLesson,
             tenantId,
-            organisationId
+            organisationId,
           },
-          select: ['lessonId', 'parentId']
+          select: ['lessonId', 'parentId'],
         });
         if (!associatedLesson) {
           throw new NotFoundException(RESPONSE_MESSAGES.ERROR.LESSON_NOT_FOUND);
         }
 
-        if (associatedLesson.parentId !== null && associatedLesson.parentId !== lessonId) {
-          throw new BadRequestException(RESPONSE_MESSAGES.ERROR.ASSOCIATED_LESSON_ALREADY_HAS_PARENT);
+        if (
+          associatedLesson.parentId !== null &&
+          associatedLesson.parentId !== lessonId
+        ) {
+          throw new BadRequestException(
+            RESPONSE_MESSAGES.ERROR.ASSOCIATED_LESSON_ALREADY_HAS_PARENT,
+          );
         }
       }
 
@@ -815,10 +948,10 @@ export class LessonsService {
             where: {
               parentId: lessonId,
               tenantId,
-              organisationId
-            }
+              organisationId,
+            },
           });
-          
+
           // Clear the parent relationship for all child lessons
           if (childLessons.length > 0) {
             await this.lessonRepository
@@ -829,9 +962,9 @@ export class LessonsService {
                 updatedBy: userId,
                 updatedAt: new Date(),
               })
-              .where("parentId = :lessonId", { lessonId })
-              .andWhere("tenantId = :tenantId", { tenantId })
-              .andWhere("organisationId = :organisationId", { organisationId })
+              .where('parentId = :lessonId', { lessonId })
+              .andWhere('tenantId = :tenantId', { tenantId })
+              .andWhere('organisationId = :organisationId', { organisationId })
               .execute();
           }
         } else {
@@ -841,10 +974,10 @@ export class LessonsService {
             where: {
               parentId: lessonId,
               tenantId,
-              organisationId
-            }
+              organisationId,
+            },
           });
-          
+
           if (existingChildLessons.length > 0) {
             await this.lessonRepository
               .createQueryBuilder()
@@ -854,12 +987,12 @@ export class LessonsService {
                 updatedBy: userId,
                 updatedAt: new Date(),
               })
-              .where("parentId = :lessonId", { lessonId })
-              .andWhere("tenantId = :tenantId", { tenantId })
-              .andWhere("organisationId = :organisationId", { organisationId })
+              .where('parentId = :lessonId', { lessonId })
+              .andWhere('tenantId = :tenantId', { tenantId })
+              .andWhere('organisationId = :organisationId', { organisationId })
               .execute();
           }
-          
+
           // Now set the new associated lesson's parentId to this lesson
           await this.lessonRepository
             .createQueryBuilder()
@@ -869,23 +1002,43 @@ export class LessonsService {
               updatedBy: userId,
               updatedAt: new Date(),
             })
-            .where("lessonId = :associatedLesson", { associatedLesson: updateLessonDto.associatedLesson })
-            .andWhere("tenantId = :tenantId", { tenantId })
-            .andWhere("organisationId = :organisationId", { organisationId })
+            .where('lessonId = :associatedLesson', {
+              associatedLesson: updateLessonDto.associatedLesson,
+            })
+            .andWhere('tenantId = :tenantId', { tenantId })
+            .andWhere('organisationId = :organisationId', { organisationId })
             .execute();
-          
+
           // Invalidate cache for the associated lesson
-          const associatedLessonKey = this.cacheConfig.getLessonKey(updateLessonDto.associatedLesson, tenantId, organisationId);
+          const associatedLessonKey = this.cacheConfig.getLessonKey(
+            updateLessonDto.associatedLesson,
+            tenantId,
+            organisationId,
+          );
           await this.cacheService.del(associatedLessonKey);
         }
       }
       // If associatedLesson is not provided (undefined), do nothing - keep existing associations
 
       // Update cache and invalidate related caches
-      const lessonKey = this.cacheConfig.getLessonKey(savedLesson.lessonId, tenantId, organisationId);
+      const lessonKey = this.cacheConfig.getLessonKey(
+        savedLesson.lessonId,
+        tenantId,
+        organisationId,
+      );
       await Promise.all([
-        this.cacheService.set(lessonKey, savedLesson, this.cacheConfig.LESSON_TTL),
-        this.cacheService.invalidateLesson(lessonId, lesson.moduleId, lesson.courseId, tenantId, organisationId),
+        this.cacheService.set(
+          lessonKey,
+          savedLesson,
+          this.cacheConfig.LESSON_TTL,
+        ),
+        this.cacheService.invalidateLesson(
+          lessonId,
+          lesson.moduleId,
+          lesson.courseId,
+          tenantId,
+          organisationId,
+        ),
       ]);
 
       return await this.findOne(savedLesson.lessonId, tenantId, organisationId);
@@ -897,7 +1050,9 @@ export class LessonsService {
       ) {
         throw error;
       }
-      throw new InternalServerErrorException(RESPONSE_MESSAGES.ERROR.ERROR_UPDATING_LESSON);
+      throw new InternalServerErrorException(
+        RESPONSE_MESSAGES.ERROR.ERROR_UPDATING_LESSON,
+      );
     }
   }
 
@@ -912,11 +1067,11 @@ export class LessonsService {
     lessonId: string,
     userId: string,
     tenantId: string,
-    organisationId: string
+    organisationId: string,
   ): Promise<{ success: boolean; message: string }> {
     try {
       const lesson = await this.findOne(lessonId, tenantId, organisationId);
-      
+
       if (!lesson) {
         throw new NotFoundException(RESPONSE_MESSAGES.ERROR.LESSON_NOT_FOUND);
       }
@@ -928,13 +1083,13 @@ export class LessonsService {
             courseId: lesson.courseId,
             tenantId,
             organisationId,
-            status: EnrollmentStatus.PUBLISHED
-          }
+            status: EnrollmentStatus.PUBLISHED,
+          },
         });
 
         if (activeEnrollments > 0) {
           throw new BadRequestException(
-            `Cannot delete lesson. The course has ${activeEnrollments} active enrollment(s). Please cancel all enrollments first.`
+            `Cannot delete lesson. The course has ${activeEnrollments} active enrollment(s). Please cancel all enrollments first.`,
           );
         }
       }
@@ -945,10 +1100,20 @@ export class LessonsService {
       await this.lessonRepository.save(lesson);
 
       // Invalidate all related caches
-      const lessonKey = this.cacheConfig.getLessonKey(lessonId, tenantId, organisationId);
+      const lessonKey = this.cacheConfig.getLessonKey(
+        lessonId,
+        tenantId,
+        organisationId,
+      );
       await Promise.all([
         this.cacheService.del(lessonKey),
-        this.cacheService.invalidateLesson(lessonId, lesson.moduleId, lesson.courseId, tenantId, organisationId),
+        this.cacheService.invalidateLesson(
+          lessonId,
+          lesson.moduleId,
+          lesson.courseId,
+          tenantId,
+          organisationId,
+        ),
       ]);
 
       return {
@@ -963,7 +1128,9 @@ export class LessonsService {
       ) {
         throw error;
       }
-      throw new InternalServerErrorException(RESPONSE_MESSAGES.ERROR.ERROR_REMOVING_LESSON);
+      throw new InternalServerErrorException(
+        RESPONSE_MESSAGES.ERROR.ERROR_REMOVING_LESSON,
+      );
     }
   }
 
@@ -978,7 +1145,7 @@ export class LessonsService {
     moduleId: string,
     userId: string,
     tenantId: string,
-    organisationId: string
+    organisationId: string,
   ): Promise<{ success: boolean; message: string; archivedCount: number }> {
     try {
       // Find all lessons for the module
@@ -987,48 +1154,65 @@ export class LessonsService {
           moduleId,
           tenantId,
           organisationId,
-          status: Not(LessonStatus.ARCHIVED)
+          status: Not(LessonStatus.ARCHIVED),
         },
-        select: ['lessonId', 'status']
+        select: ['lessonId', 'status'],
       });
 
       if (lessons.length === 0) {
         return {
           success: true,
           message: 'No lessons found to archive',
-          archivedCount: 0
+          archivedCount: 0,
         };
       }
 
       // Archive all lessons
-      const lessonIds = lessons.map(lesson => lesson.lessonId);
+      const lessonIds = lessons.map((lesson) => lesson.lessonId);
       await this.lessonRepository.update(
         { lessonId: In(lessonIds) },
-        { 
+        {
           status: LessonStatus.ARCHIVED,
           updatedBy: userId,
-          updatedAt: new Date()
-        }
+          updatedAt: new Date(),
+        },
       );
 
       // Invalidate related caches
       await Promise.all([
-        ...lessonIds.map(lessonId => 
-          this.cacheService.invalidateLesson(lessonId, moduleId, '', tenantId, organisationId)
+        ...lessonIds.map((lessonId) =>
+          this.cacheService.invalidateLesson(
+            lessonId,
+            moduleId,
+            '',
+            tenantId,
+            organisationId,
+          ),
         ),
-        this.cacheService.invalidateModule(moduleId, '', tenantId, organisationId)
+        this.cacheService.invalidateModule(
+          moduleId,
+          '',
+          tenantId,
+          organisationId,
+        ),
       ]);
 
-      this.logger.log(`Archived ${lessons.length} lessons for module ${moduleId}`);
+      this.logger.log(
+        `Archived ${lessons.length} lessons for module ${moduleId}`,
+      );
 
       return {
         success: true,
         message: `Successfully archived ${lessons.length} lessons`,
-        archivedCount: lessons.length
+        archivedCount: lessons.length,
       };
     } catch (error) {
-      this.logger.error(`Error archiving lessons for module ${moduleId}: ${error.message}`);
-      throw new InternalServerErrorException(RESPONSE_MESSAGES.ERROR.ERROR_REMOVING_LESSON);
+      this.logger.error(
+        `Error archiving lessons for module ${moduleId}: ${error.message}`,
+      );
+      throw new InternalServerErrorException(
+        RESPONSE_MESSAGES.ERROR.ERROR_REMOVING_LESSON,
+      );
     }
   }
 
@@ -1043,7 +1227,7 @@ export class LessonsService {
     courseId: string,
     userId: string,
     tenantId: string,
-    organisationId: string
+    organisationId: string,
   ): Promise<{ success: boolean; message: string; archivedCount: number }> {
     try {
       // Find all lessons for the course
@@ -1052,48 +1236,60 @@ export class LessonsService {
           courseId,
           tenantId,
           organisationId,
-          status: Not(LessonStatus.ARCHIVED)
+          status: Not(LessonStatus.ARCHIVED),
         },
-        select: ['lessonId', 'moduleId', 'status']
+        select: ['lessonId', 'moduleId', 'status'],
       });
 
       if (lessons.length === 0) {
         return {
           success: true,
           message: 'No lessons found to archive',
-          archivedCount: 0
+          archivedCount: 0,
         };
       }
 
       // Archive all lessons
-      const lessonIds = lessons.map(lesson => lesson.lessonId);
+      const lessonIds = lessons.map((lesson) => lesson.lessonId);
       await this.lessonRepository.update(
         { lessonId: In(lessonIds) },
-        { 
+        {
           status: LessonStatus.ARCHIVED,
           updatedBy: userId,
-          updatedAt: new Date()
-        }
+          updatedAt: new Date(),
+        },
       );
 
       // Invalidate related caches
       await Promise.all([
-        ...lessons.map(lesson => 
-          this.cacheService.invalidateLesson(lesson.lessonId, lesson.moduleId, courseId, tenantId, organisationId)
+        ...lessons.map((lesson) =>
+          this.cacheService.invalidateLesson(
+            lesson.lessonId,
+            lesson.moduleId,
+            courseId,
+            tenantId,
+            organisationId,
+          ),
         ),
-        this.cacheService.invalidateCourse(courseId, tenantId, organisationId)
+        this.cacheService.invalidateCourse(courseId, tenantId, organisationId),
       ]);
 
-      this.logger.log(`Archived ${lessons.length} lessons for course ${courseId}`);
+      this.logger.log(
+        `Archived ${lessons.length} lessons for course ${courseId}`,
+      );
 
       return {
         success: true,
         message: `Successfully archived ${lessons.length} lessons`,
-        archivedCount: lessons.length
+        archivedCount: lessons.length,
       };
     } catch (error) {
-      this.logger.error(`Error archiving lessons for course ${courseId}: ${error.message}`);
-      throw new InternalServerErrorException(RESPONSE_MESSAGES.ERROR.ERROR_REMOVING_LESSON);
+      this.logger.error(
+        `Error archiving lessons for course ${courseId}: ${error.message}`,
+      );
+      throw new InternalServerErrorException(
+        RESPONSE_MESSAGES.ERROR.ERROR_REMOVING_LESSON,
+      );
     }
   }
 
@@ -1130,14 +1326,29 @@ export class LessonsService {
       // Clone each lesson
       for (const lesson of lessons) {
         try {
-          await this.cloneLessonWithTransaction(lesson, newModuleId, userId, tenantId, organisationId, transactionalEntityManager, newCourseId, authorization);
+          await this.cloneLessonWithTransaction(
+            lesson,
+            newModuleId,
+            userId,
+            tenantId,
+            organisationId,
+            transactionalEntityManager,
+            newCourseId,
+            authorization,
+          );
         } catch (error) {
-          this.logger.error(`Error cloning lesson ${lesson.lessonId}: ${error.message}`);
-          throw new Error(`${RESPONSE_MESSAGES.ERROR.LESSON_COPY_FAILED}: ${lesson.title}`);
+          this.logger.error(
+            `Error cloning lesson ${lesson.lessonId}: ${error.message}`,
+          );
+          throw new Error(
+            `${RESPONSE_MESSAGES.ERROR.LESSON_COPY_FAILED}: ${lesson.title}`,
+          );
         }
       }
     } catch (error) {
-      this.logger.error(`Error in cloneLessonsWithTransaction for module ${originalModuleId}: ${error.message}`);
+      this.logger.error(
+        `Error in cloneLessonsWithTransaction for module ${originalModuleId}: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -1156,105 +1367,142 @@ export class LessonsService {
     authorization: string,
   ): Promise<Lesson | boolean> {
     try {
-      if(originalLesson.format === LessonFormat.EVENT){
+      if (originalLesson.format === LessonFormat.EVENT) {
         return true;
-      }else{
-        
-      let newMediaId: string | undefined;
+      } else {
+        let newMediaId: string | undefined;
 
-      // Clone media if lesson has media
-      if (originalLesson.mediaId) {
-        const originalMedia = await transactionalEntityManager.findOne(Media, {
-          where: { mediaId: originalLesson.mediaId },
-        });
+        // Clone media if lesson has media
+        if (originalLesson.mediaId) {
+          const originalMedia = await transactionalEntityManager.findOne(
+            Media,
+            {
+              where: { mediaId: originalLesson.mediaId },
+            },
+          );
 
-        if (originalMedia) {
+          if (originalMedia) {
+            let clonedTestId = originalMedia.source;
+            if (originalLesson.format === LessonFormat.ASSESSMENT) {
+              clonedTestId = await this.cloneTest(
+                originalMedia.source,
+                organisationId,
+                tenantId,
+                userId,
+                authorization,
+              );
+            }
 
-          let clonedTestId = originalMedia.source;
-          if(originalLesson.format === LessonFormat.ASSESSMENT){
-            clonedTestId = await this.cloneTest(originalMedia.source, organisationId, tenantId, userId, authorization);
+            const newMediaData = {
+              ...originalMedia,
+              createdBy: userId,
+              updatedBy: userId,
+              source: clonedTestId,
+              // Remove properties that should not be copied
+              mediaId: undefined,
+              // Don't set createdAt/updatedAt - let TypeORM handle them automatically
+            };
+
+            const newMedia = transactionalEntityManager.create(
+              Media,
+              newMediaData,
+            );
+            const savedMedia = await transactionalEntityManager.save(
+              Media,
+              newMedia,
+            );
+
+            if (!savedMedia) {
+              throw new Error(
+                `${RESPONSE_MESSAGES.ERROR.MEDIA_SAVE_FAILED}: ${originalLesson.title}`,
+              );
+            }
+
+            newMediaId = savedMedia.mediaId;
           }
+        }
 
-          const newMediaData = {
-            ...originalMedia,
-            createdBy: userId,
-            updatedBy: userId,
-            source: clonedTestId,
-            // Remove properties that should not be copied
-            mediaId: undefined,
-            // Don't set createdAt/updatedAt - let TypeORM handle them automatically
-          };
+        this.logger.log(`Final newMediaId value: ${newMediaId}`);
 
-          const newMedia = transactionalEntityManager.create(Media, newMediaData);
-          const savedMedia = await transactionalEntityManager.save(Media, newMedia);
-          
-          if (!savedMedia) {
-            throw new Error(`${RESPONSE_MESSAGES.ERROR.MEDIA_SAVE_FAILED}: ${originalLesson.title}`);
+        // Create new lesson data
+        const newLessonData = {
+          // Copy all properties from original lesson except the ones we want to override
+          title: originalLesson.title,
+          alias: originalLesson.alias + '-copy',
+          format: originalLesson.format,
+          subFormat: originalLesson.subFormat, // Copy subFormat from original lesson
+          image: originalLesson.image,
+          description: originalLesson.description,
+          status: originalLesson.status,
+          startDatetime: originalLesson.startDatetime,
+          endDatetime: originalLesson.endDatetime,
+          storage: originalLesson.storage,
+          noOfAttempts: originalLesson.noOfAttempts,
+          attemptsGrade: originalLesson.attemptsGrade,
+          prerequisites: originalLesson.prerequisites,
+          idealTime: originalLesson.idealTime,
+          resume: originalLesson.resume,
+          totalMarks: originalLesson.totalMarks,
+          passingMarks: originalLesson.passingMarks,
+          params: originalLesson.params || {},
+          sampleLesson: originalLesson.sampleLesson,
+          considerForPassing: originalLesson.considerForPassing,
+          // Explicitly preserve allowResubmission value from original lesson (true stays true, false stays false)
+          // This applies to all lesson formats: feedback, quiz, assessment, reflection.prompt, etc.
+          allowResubmission: originalLesson.allowResubmission,
+          tenantId,
+          organisationId,
+          // Override with new values
+          mediaId: newMediaId || null, //Use null if no new media was created
+          courseId: newCourseId,
+          moduleId: newModuleId,
+          createdBy: userId,
+          updatedBy: userId,
+        };
+
+        const newLesson = transactionalEntityManager.create(
+          Lesson,
+          newLessonData,
+        );
+        const savedLesson = await transactionalEntityManager.save(
+          Lesson,
+          newLesson,
+        );
+
+        if (!savedLesson) {
+          throw new Error(
+            `${RESPONSE_MESSAGES.ERROR.LESSON_SAVE_FAILED}: ${originalLesson.title}`,
+          );
+        }
+
+        // Clone associated files if lesson has them
+        if (
+          originalLesson.associatedFiles &&
+          originalLesson.associatedFiles.length > 0
+        ) {
+          try {
+            await this.cloneAssociatedFilesWithTransaction(
+              originalLesson.lessonId,
+              savedLesson.lessonId,
+              userId,
+              tenantId,
+              organisationId,
+              transactionalEntityManager,
+            );
+          } catch (error) {
+            this.logger.error(
+              `Error cloning associated files for lesson ${originalLesson.lessonId}: ${error.message}`,
+            );
+            // Don't throw here as the lesson was already saved
           }
-          
-          newMediaId = savedMedia.mediaId;
         }
+
+        return savedLesson;
       }
-     
-
-      this.logger.log(`Final newMediaId value: ${newMediaId}`);
-
-      // Create new lesson data
-      const newLessonData = {
-        // Copy all properties from original lesson except the ones we want to override
-        title: originalLesson.title,
-        alias: originalLesson.alias + '-copy',
-        format: originalLesson.format,
-        subFormat: originalLesson.subFormat, // Copy subFormat from original lesson
-        image: originalLesson.image,
-        description: originalLesson.description,
-        status: originalLesson.status,
-        startDatetime: originalLesson.startDatetime,
-        endDatetime: originalLesson.endDatetime,
-        storage: originalLesson.storage,
-        noOfAttempts: originalLesson.noOfAttempts,
-        attemptsGrade: originalLesson.attemptsGrade,
-        prerequisites: originalLesson.prerequisites,
-        idealTime: originalLesson.idealTime,
-        resume: originalLesson.resume,
-        totalMarks: originalLesson.totalMarks,
-        passingMarks: originalLesson.passingMarks,
-        params: originalLesson.params || {},
-        sampleLesson: originalLesson.sampleLesson,
-        considerForPassing: originalLesson.considerForPassing,
-        tenantId,
-        organisationId,
-        // Override with new values
-        mediaId: newMediaId || null, //Use null if no new media was created
-        courseId: newCourseId,
-        moduleId: newModuleId,
-        createdBy: userId,
-        updatedBy: userId,
-      };
-
-
-      const newLesson = transactionalEntityManager.create(Lesson, newLessonData);
-      const savedLesson = await transactionalEntityManager.save(Lesson, newLesson);
-
-      if (!savedLesson) {
-        throw new Error(`${RESPONSE_MESSAGES.ERROR.LESSON_SAVE_FAILED}: ${originalLesson.title}`);
-      }
-
-
-      // Clone associated files if lesson has them
-      if (originalLesson.associatedFiles && originalLesson.associatedFiles.length > 0) {
-        try {
-          await this.cloneAssociatedFilesWithTransaction(originalLesson.lessonId, savedLesson.lessonId, userId, tenantId, organisationId, transactionalEntityManager);
-        } catch (error) {
-          this.logger.error(`Error cloning associated files for lesson ${originalLesson.lessonId}: ${error.message}`);
-          // Don't throw here as the lesson was already saved
-        }
-      }
-
-      return savedLesson;
-    }
     } catch (error) {
-      this.logger.error(`Error in cloneLessonWithTransaction for lesson ${originalLesson.lessonId}: ${error.message}`);
+      this.logger.error(
+        `Error in cloneLessonWithTransaction for lesson ${originalLesson.lessonId}: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -1271,17 +1519,22 @@ export class LessonsService {
     transactionalEntityManager: any,
   ): Promise<void> {
     try {
-      const associatedFiles = await transactionalEntityManager.find(AssociatedFile, {
-        where: {
-          lessonId: originalLessonId,
-          tenantId,
-          organisationId,
+      const associatedFiles = await transactionalEntityManager.find(
+        AssociatedFile,
+        {
+          where: {
+            lessonId: originalLessonId,
+            tenantId,
+            organisationId,
+          },
+          relations: ['media'],
         },
-        relations: ['media'],
-      });
+      );
 
       if (!associatedFiles || associatedFiles.length === 0) {
-        this.logger.warn(`No associated files found for lesson ${originalLessonId}`);
+        this.logger.warn(
+          `No associated files found for lesson ${originalLessonId}`,
+        );
         return;
       }
 
@@ -1300,15 +1553,23 @@ export class LessonsService {
               mediaId: undefined,
             };
 
-            const newMedia = transactionalEntityManager.create(Media, newMediaData);
-            const savedMedia = await transactionalEntityManager.save(Media, newMedia);
-            
+            const newMedia = transactionalEntityManager.create(
+              Media,
+              newMediaData,
+            );
+            const savedMedia = await transactionalEntityManager.save(
+              Media,
+              newMedia,
+            );
+
             if (!savedMedia) {
               throw new Error(RESPONSE_MESSAGES.ERROR.MEDIA_SAVE_FAILED);
             }
-            
+
             newMediaId = savedMedia.mediaId;
-            this.logger.log(`Cloned associated file media from ${originalMedia.mediaId} to ${newMediaId}`);
+            this.logger.log(
+              `Cloned associated file media from ${originalMedia.mediaId} to ${newMediaId}`,
+            );
 
             // Create new associated file record
             const newAssociatedFileData = {
@@ -1320,20 +1581,32 @@ export class LessonsService {
               updatedBy: userId,
             };
 
-            const newAssociatedFile = transactionalEntityManager.create(AssociatedFile, newAssociatedFileData);
-            const savedAssociatedFile = await transactionalEntityManager.save(AssociatedFile, newAssociatedFile);
-            
+            const newAssociatedFile = transactionalEntityManager.create(
+              AssociatedFile,
+              newAssociatedFileData,
+            );
+            const savedAssociatedFile = await transactionalEntityManager.save(
+              AssociatedFile,
+              newAssociatedFile,
+            );
+
             if (!savedAssociatedFile) {
-              throw new Error(RESPONSE_MESSAGES.ERROR.ASSOCIATED_FILE_SAVE_FAILED);
+              throw new Error(
+                RESPONSE_MESSAGES.ERROR.ASSOCIATED_FILE_SAVE_FAILED,
+              );
             }
           }
         } catch (error) {
-          this.logger.error(`Error cloning associated file ${associatedFile.associatedFileId}: ${error.message}`);
+          this.logger.error(
+            `Error cloning associated file ${associatedFile.associatedFileId}: ${error.message}`,
+          );
           // Continue with other files even if one fails
         }
       }
     } catch (error) {
-      this.logger.error(`Error in cloneAssociatedFilesWithTransaction for lesson ${originalLessonId}: ${error.message}`);
+      this.logger.error(
+        `Error in cloneAssociatedFilesWithTransaction for lesson ${originalLessonId}: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -1352,39 +1625,49 @@ export class LessonsService {
     organisationId: string,
     tenantId: string,
     userId: string,
-    authorization: string
+    authorization: string,
   ): Promise<string> {
     try {
       // Get the assessment service URL from environment
-      const assessmentServiceUrl = this.configService.get<string>('ASSESSMENT_SERVICE_URL') || '';
-      
+      const assessmentServiceUrl =
+        this.configService.get<string>('ASSESSMENT_SERVICE_URL') || '';
+
       // Construct the full URL
       const url = `${assessmentServiceUrl}/tests/${testId}/clone`;
-      
+
       this.logger.log(`Cloning test ${testId} from ${url}`);
 
       // Make the POST request using direct axios
-      const response = await axios.post(url, {}, {
-        headers: {
-          'organisationId': organisationId,
-          'tenantId': tenantId,
-          'authorization': authorization,
-          'Content-Type': 'application/json',
-          'userId': userId,
+      const response = await axios.post(
+        url,
+        {},
+        {
+          headers: {
+            organisationId: organisationId,
+            tenantId: tenantId,
+            authorization: authorization,
+            'Content-Type': 'application/json',
+            userId: userId,
+          },
         },
-      });
+      );
 
       const responseData = response.data;
 
       // Validate response structure
       if (!responseData || !responseData.result) {
-        this.logger.error(`Invalid response structure from assessment service: ${JSON.stringify(responseData)}`);
-        throw new BadRequestException('Invalid response from assessment service');
+        this.logger.error(
+          `Invalid response structure from assessment service: ${JSON.stringify(responseData)}`,
+        );
+        throw new BadRequestException(
+          'Invalid response from assessment service',
+        );
       }
 
       // Check if the operation was successful
       if (responseData.params.status !== 'successful') {
-        const errorMessage = responseData.params.errmsg || 'Failed to clone test';
+        const errorMessage =
+          responseData.params.errmsg || 'Failed to clone test';
         this.logger.error(`Assessment service error: ${errorMessage}`);
         throw new BadRequestException(errorMessage);
       }
@@ -1393,32 +1676,40 @@ export class LessonsService {
       const clonedTestId = responseData.result.clonedTestId;
       if (!clonedTestId) {
         this.logger.error('No cloned test ID in response');
-        throw new BadRequestException('No cloned test ID received from assessment service');
+        throw new BadRequestException(
+          'No cloned test ID received from assessment service',
+        );
       }
 
       this.logger.log(`Successfully cloned test ${testId} to ${clonedTestId}`);
       return clonedTestId;
-
     } catch (error) {
-      this.logger.error(`Error cloning test ${testId}: ${error.message}`, error.stack);
-      
+      this.logger.error(
+        `Error cloning test ${testId}: ${error.message}`,
+        error.stack,
+      );
+
       // Re-throw BadRequestException as is
       if (error instanceof BadRequestException) {
         throw error;
       }
-      
+
       // Handle axios errors
       if (axios.isAxiosError(error) && error.response) {
         const status = error.response.status;
-        const errorMessage = error.response.data?.params?.errmsg || `Assessment service error (${status})`;
+        const errorMessage =
+          error.response.data?.params?.errmsg ||
+          `Assessment service error (${status})`;
         throw new BadRequestException(errorMessage);
       }
-      
+
       // Handle network errors
       if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-        throw new BadRequestException('Unable to connect to assessment service');
+        throw new BadRequestException(
+          'Unable to connect to assessment service',
+        );
       }
-      
+
       // Generic error
       throw new BadRequestException('Failed to clone test');
     }
@@ -1428,7 +1719,7 @@ export class LessonsService {
    * Clone a lesson with all its media and associated files
    */
   async cloneLesson(
-    lessonId: string,    
+    lessonId: string,
     userId: string,
     tenantId: string,
     organisationId: string,
@@ -1440,87 +1731,113 @@ export class LessonsService {
 
     try {
       // Use a database transaction to ensure data consistency
-      const result = await this.lessonRepository.manager.transaction(async (transactionalEntityManager) => {
-        // Find the original lesson
-        const originalLesson = await transactionalEntityManager.findOne(Lesson, {
-          where: { 
-            lessonId,
+      const result = await this.lessonRepository.manager.transaction(
+        async (transactionalEntityManager) => {
+          // Find the original lesson
+          const originalLesson = await transactionalEntityManager.findOne(
+            Lesson,
+            {
+              where: {
+                lessonId,
+                tenantId,
+                organisationId,
+              },
+              relations: ['media', 'associatedFiles.media'],
+            },
+          );
+
+          if (!originalLesson) {
+            throw new NotFoundException(
+              RESPONSE_MESSAGES.ERROR.LESSON_NOT_FOUND,
+            );
+          }
+
+          // Generate title and alias for the copied lesson
+          const newTitle = `${originalLesson.title} (Copy)`;
+          const newAlias = originalLesson.alias + '-copy';
+
+          const course = await this.courseRepository.findOne({
+            where: {
+              courseId: newCourseId,
+              tenantId,
+              organisationId,
+            },
+          });
+          if (!course) {
+            throw new NotFoundException(
+              RESPONSE_MESSAGES.ERROR.COURSE_NOT_FOUND,
+            );
+          }
+
+          const module = await this.moduleRepository.findOne({
+            where: {
+              moduleId: newModuleId,
+              courseId: newCourseId,
+              tenantId,
+              organisationId,
+            },
+          });
+          if (!module) {
+            throw new NotFoundException(
+              RESPONSE_MESSAGES.ERROR.MODULE_NOT_FOUND,
+            );
+          }
+
+          // Clone the lesson using the existing transaction method
+          const clonedLesson = await this.cloneLessonWithTransaction(
+            originalLesson,
+            newModuleId,
+            userId,
             tenantId,
             organisationId,
-          },
-          relations: ['media', 'associatedFiles.media'],
-        });
+            transactionalEntityManager,
+            newCourseId,
+            authorization,
+          );
 
-        if (!originalLesson) {
-          throw new NotFoundException(RESPONSE_MESSAGES.ERROR.LESSON_NOT_FOUND);
-        }
+          if (typeof clonedLesson === 'boolean') {
+            throw new Error(RESPONSE_MESSAGES.ERROR.LESSON_COPY_FAILED);
+          }
 
-        // Generate title and alias for the copied lesson
-        const newTitle = `${originalLesson.title} (Copy)`;
-        const newAlias = originalLesson.alias + '-copy';
+          // Update the title and alias
+          clonedLesson.title = newTitle;
+          clonedLesson.alias = newAlias;
 
-        const course = await this.courseRepository.findOne({
-          where: {
-            courseId: newCourseId,
-            tenantId,
-            organisationId,
-          },
-        });
-        if(!course){
-          throw new NotFoundException(RESPONSE_MESSAGES.ERROR.COURSE_NOT_FOUND);
-        }
+          // Save the updated lesson
+          const savedLesson = await transactionalEntityManager.save(
+            Lesson,
+            clonedLesson,
+          );
 
-        const module = await this.moduleRepository.findOne({
-          where: {
-            moduleId: newModuleId,
-            courseId: newCourseId,
-            tenantId,
-            organisationId,
-          },
-        });
-        if(!module){
-          throw new NotFoundException(RESPONSE_MESSAGES.ERROR.MODULE_NOT_FOUND);
-        }
-
-        // Clone the lesson using the existing transaction method
-        const clonedLesson = await this.cloneLessonWithTransaction(
-          originalLesson,
-          newModuleId,
-          userId,
-          tenantId,
-          organisationId,
-          transactionalEntityManager,
-          newCourseId,
-          authorization
-        );
-
-        if (typeof clonedLesson === 'boolean') {
-          throw new Error(RESPONSE_MESSAGES.ERROR.LESSON_COPY_FAILED);
-        }
-
-        // Update the title and alias
-        clonedLesson.title = newTitle;
-        clonedLesson.alias = newAlias;
-
-        // Save the updated lesson
-        const savedLesson = await transactionalEntityManager.save(Lesson, clonedLesson);
-
-        this.logger.log(`Lesson copied successfully: ${savedLesson.lessonId}`);
-        return savedLesson;
-      });
+          this.logger.log(
+            `Lesson copied successfully: ${savedLesson.lessonId}`,
+          );
+          return savedLesson;
+        },
+      );
 
       // Handle cache operations after successful transaction
-      await this.cacheService.invalidateLesson(lessonId, '', '', tenantId, organisationId);
+      await this.cacheService.invalidateLesson(
+        lessonId,
+        '',
+        '',
+        tenantId,
+        organisationId,
+      );
 
       return result;
     } catch (error) {
-      this.logger.error(`Error cloning lesson ${lessonId}: ${error.message}`, error.stack);
-      
+      this.logger.error(
+        `Error cloning lesson ${lessonId}: ${error.message}`,
+        error.stack,
+      );
+
       if (error instanceof NotFoundException) {
         throw error;
       }
-      throw new InternalServerErrorException(RESPONSE_MESSAGES.ERROR.LESSON_COPY_FAILED);
+      throw new InternalServerErrorException(
+        RESPONSE_MESSAGES.ERROR.LESSON_COPY_FAILED,
+      );
     }
   }
-
 }

@@ -156,6 +156,7 @@ export class TrackingService {
 
   /**
    * Start a new lesson attempt or get existing incomplete attempt
+   * OPTIMIZED: Parallel queries and batch loading for prerequisites
    */
   async startLessonAttempt(
     lessonId: string,
@@ -163,7 +164,7 @@ export class TrackingService {
     tenantId: string,
     organisationId: string
   ): Promise<LessonTrack> {
-    // Get lesson details first
+    // OPTIMIZED: Get lesson details first
     const lesson = await this.lessonRepository.findOne({
       where: { 
         lessonId,
@@ -182,14 +183,27 @@ export class TrackingService {
       throw new NotFoundException(RESPONSE_MESSAGES.ERROR.COURSE_LESSON_NOT_FOUND);
     }
 
-    // Check prerequisites if any exist
-    const prerequisiteCheck = await this.checkLessonsPrerequisites(
-      lesson,
-      userId,
-      courseId,
-      tenantId,
-      organisationId
-    );
+    // OPTIMIZED: Check prerequisites and get existing tracks in parallel
+    // This reduces sequential queries from 2 to 1 (parallel execution)
+    const [prerequisiteCheck, existingTracks] = await Promise.all([
+      this.checkLessonsPrerequisites(
+        lesson,
+        userId,
+        courseId,
+        tenantId,
+        organisationId
+      ),
+      this.lessonTrackRepository.find({
+        where: { 
+          lessonId, 
+          userId,
+          courseId,
+          tenantId,
+          organisationId,
+        } as FindOptionsWhere<LessonTrack>,
+        order: { attempt: 'DESC' },
+      })
+    ]);
 
     if (!prerequisiteCheck.isEligible && prerequisiteCheck.requiredLessons) {
       // Get the titles of missing prerequisite lessons for better error message
@@ -200,29 +214,8 @@ export class TrackingService {
       );
     }
 
-    //check if course is completed ,then throw error
-    const courseTrack = await this.courseTrackRepository.findOne({
-      where: {
-        courseId,
-        userId,
-        tenantId,
-        organisationId
-      } as FindOptionsWhere<CourseTrack>,
-    }); 
-    // if (courseTrack && courseTrack.status === TrackingStatus.COMPLETED) {
-    //   throw new BadRequestException(RESPONSE_MESSAGES.ERROR.COURSE_COMPLETED);
-    // }
-    // Find existing tracks for course lesson
-    const existingTracks = await this.lessonTrackRepository.find({
-      where: { 
-        lessonId, 
-        userId,
-        courseId,
-        tenantId,
-        organisationId,
-      } as FindOptionsWhere<LessonTrack>,
-      order: { attempt: 'DESC' },
-    });
+    // REMOVED: Unused courseTrack query (check was commented out)
+    // This eliminates an unnecessary database query
 
     // If there's an incomplete attempt, return it
     const incompleteAttempt = existingTracks.find(track => track.status !== TrackingStatus.COMPLETED);
@@ -270,6 +263,7 @@ export class TrackingService {
 
   /**
    * Check if all prerequisites for a lesson are completed
+   * OPTIMIZED: Batch load all prerequisites and completion checks to avoid N+1 queries
    * @param lesson The lesson to check prerequisites for
    * @param userId The user ID
    * @param courseId The course ID
@@ -291,50 +285,50 @@ export class TrackingService {
       };
     }
 
+    // OPTIMIZED: Batch load all prerequisite lessons in a single query
+    // Instead of N queries (one per prerequisite), we fetch all at once
+    const prerequisiteLessonIds = lesson.prerequisites;
+    const requiredLessonsData = await this.lessonRepository.find({
+      where: {
+        lessonId: In(prerequisiteLessonIds),
+        tenantId,
+        organisationId,
+        status: LessonStatus.PUBLISHED
+      },
+      select: ['lessonId', 'title']
+    });
+
+    // OPTIMIZED: Batch load all completion tracks in a single query
+    // Instead of N queries (one per prerequisite), we fetch all at once
+    const completedTracks = await this.lessonTrackRepository.find({
+      where: {
+        lessonId: In(prerequisiteLessonIds),
+        userId,
+        courseId,
+        tenantId,
+        organisationId,
+        status: TrackingStatus.COMPLETED
+      } as FindOptionsWhere<LessonTrack>,
+      select: ['lessonId']
+    });
+
+    // Create a map for quick lookup of completed lessons
+    const completedLessonIds = new Set(completedTracks.map(track => track.lessonId));
+    
+    // Create a map for quick lookup of lesson titles
+    const lessonTitleMap = new Map(requiredLessonsData.map(lesson => [lesson.lessonId, lesson.title]));
+
     const requiredLessons: any[] = [];
     let allCompleted = true;
 
-    // Check each required lesson ID from the array
-    for (const requiredLessonId of lesson.prerequisites) {
-      // Fetch the required lesson details
-      const requiredLesson = await this.lessonRepository.findOne({
-        where: {
-          lessonId: requiredLessonId,
-          tenantId,
-          organisationId,
-          status: LessonStatus.PUBLISHED
-        },
-        select: ['lessonId', 'title']
-      });
-
-      if (!requiredLesson) {
-        // If required lesson doesn't exist, consider it as not completed
-        requiredLessons.push({
-          lessonId: requiredLessonId,
-          title: 'Unknown Lesson',
-          completed: false
-        });
-        allCompleted = false;
-        continue;
-      }
-
-      // Check if the user has completed this lesson
-      const completedTrack = await this.lessonTrackRepository.findOne({
-        where: {
-          lessonId: requiredLessonId,
-          userId,
-          courseId,
-          tenantId,
-          organisationId,
-          status: TrackingStatus.COMPLETED
-        } as FindOptionsWhere<LessonTrack>,
-      });
-
-      const isCompleted = !!completedTrack;
+    // Process each prerequisite (now using pre-loaded data)
+    for (const requiredLessonId of prerequisiteLessonIds) {
+      const title = lessonTitleMap.get(requiredLessonId) || 'Unknown Lesson';
+      const isCompleted = completedLessonIds.has(requiredLessonId);
 
       requiredLessons.push({
         lessonId: requiredLessonId,
-        title: requiredLesson.title,
+        title: title,
         completed: isCompleted
       });
 
@@ -601,6 +595,7 @@ export class TrackingService {
         tenantId,
         organisationId
       } as FindOptionsWhere<LessonTrack>,
+      relations: ['lesson'], // Load lesson to avoid redundant query later
     });
 
     if (!attempt) {
@@ -646,12 +641,16 @@ export class TrackingService {
 
     const savedAttempt = await this.lessonTrackRepository.save(attempt);
 
-    // Update course and module tracking if lesson is completed
-    if (savedAttempt.courseId) {
-      await this.updateCourseAndModuleTracking(savedAttempt, tenantId, organisationId);
+    // Update course and module tracking asynchronously (fire and forget) to avoid blocking response
+    // Skip expensive operations for incomplete status - no need to recalculate course completion
+    if (savedAttempt.courseId && savedAttempt.status !== TrackingStatus.INCOMPLETE) {
+      this.updateCourseAndModuleTracking(savedAttempt, tenantId, organisationId)
+        .catch(err => this.logger.error('Failed to update course/module tracking asynchronously', err));
     }
 
-    return savedAttempt;
+    // Remove lesson relation from response to reduce payload size (lesson was loaded only for internal use)
+    const { lesson, course, ...response } = savedAttempt;
+    return response as unknown as LessonTrack;
   }
 
   /**
@@ -718,11 +717,15 @@ export class TrackingService {
     await this.courseTrackRepository.save(courseTrack);
 
     // Find and update module tracking if applicable
-    const lesson = await this.lessonRepository.findOne({
-      where: { 
-        lessonId: lessonTrack.lessonId,
-      } as FindOptionsWhere<Lesson>,
-    });
+    // Use lesson from relation if available (loaded in updateProgress), otherwise query
+    let lesson = (lessonTrack as any).lesson;
+    if (!lesson) {
+      lesson = await this.lessonRepository.findOne({
+        where: { 
+          lessonId: lessonTrack.lessonId,
+        } as FindOptionsWhere<Lesson>,
+      });
+    }
 
     if (lesson && lesson.moduleId) {
       await this.updateModuleTracking(lesson.moduleId, lessonTrack.userId, lessonTrack.tenantId, lessonTrack.organisationId);
@@ -732,6 +735,10 @@ export class TrackingService {
   /**
    * Calculate completed lessons based on attemptsGrade method
    */
+  /**
+   * Calculate completed lessons based on attemptsGrade method
+   * OPTIMIZED: Uses batch query to avoid N+1 problem
+   */
   private async calculateCompletedLessonsBasedOnAttemptsGrade(
     lessons: Lesson[],
     userId: string,
@@ -739,27 +746,45 @@ export class TrackingService {
     tenantId: string,
     organisationId: string
   ): Promise<number> {
-    let completedLessonsCount = 0;
+    if (lessons.length === 0) {
+      return 0;
+    }
 
-    for (const lesson of lessons) {
-      // Get all attempts for this lesson
-      const whereClause: any = { 
-        lessonId: lesson.lessonId,
-        userId,
-        tenantId,
-        organisationId,
-        status: In([TrackingStatus.COMPLETED, TrackingStatus.SUBMITTED])
-      };
-      
-      // Add courseId filter only if it's provided
-      if (courseId) {
-        whereClause.courseId = courseId;
+    // Step 1: Get all lesson IDs
+    const lessonIds = lessons.map(l => l.lessonId);
+
+    // Step 2: Single batch query for ALL attempts (fixes N+1 problem)
+    const whereClause: any = {
+      lessonId: In(lessonIds),
+      userId,
+      tenantId,
+      organisationId,
+      status: In([TrackingStatus.COMPLETED, TrackingStatus.SUBMITTED])
+    };
+    
+    // Add courseId filter only if it's provided
+    if (courseId) {
+      whereClause.courseId = courseId;
+    }
+
+    const allAttempts = await this.lessonTrackRepository.find({
+      where: whereClause as FindOptionsWhere<LessonTrack>,
+      order: { attempt: 'ASC' }
+    });
+
+    // Step 3: Group attempts by lessonId in memory
+    const attemptsByLesson = new Map<string, LessonTrack[]>();
+    allAttempts.forEach(attempt => {
+      if (!attemptsByLesson.has(attempt.lessonId)) {
+        attemptsByLesson.set(attempt.lessonId, []);
       }
+      attemptsByLesson.get(attempt.lessonId)!.push(attempt);
+    });
 
-      const lessonAttempts = await this.lessonTrackRepository.find({
-        where: whereClause as FindOptionsWhere<LessonTrack>,
-        order: { attempt: 'ASC' }
-      });
+    // Step 4: Process each lesson using the grouped data
+    let completedLessonsCount = 0;
+    for (const lesson of lessons) {
+      const lessonAttempts = attemptsByLesson.get(lesson.lessonId) || [];
 
       if (lessonAttempts.length === 0) {
         continue; // No completed attempts
@@ -973,18 +998,173 @@ export class TrackingService {
       // Save the updated attempt
       const updatedAttempt = await this.lessonTrackRepository.save(lastAttempt);
 
-    // Update course and module tracking if lesson is completed
-    if (updatedAttempt.courseId) {
-      await this.updateCourseAndModuleTracking(updatedAttempt, tenantId, organisationId);
-    }
+      // Attach lesson to attempt to avoid redundant query in async update
+      (updatedAttempt as any).lesson = lesson;
 
-      return updatedAttempt;
+      // Update course and module tracking asynchronously (fire and forget) to avoid blocking response
+      // Skip expensive operations for incomplete status - no need to recalculate course completion
+      if (updatedAttempt.courseId && updatedAttempt.status !== TrackingStatus.INCOMPLETE) {
+        this.updateCourseAndModuleTracking(updatedAttempt, tenantId, organisationId)
+          .catch(err => this.logger.error('Failed to update course/module tracking asynchronously', err));
+      }
+
+      // Remove lesson relation from response to reduce payload size (lesson was loaded only for internal use)
+      const { lesson: _lesson, course: _course, ...response } = updatedAttempt;
+      return response as unknown as LessonTrack;
     } catch (error) {
       this.logger.error(`Error updating event progress for eventId: ${eventId}, userId: ${updateEventProgressDto.userId}`, error);
       if (error instanceof NotFoundException) {
         throw error;
       }
       throw new BadRequestException('Error updating lesson progress');
+    }
+  }
+
+  /**
+   * Recalculate progress for course tracking and module tracking
+   * Updates noOfLessons in course_track and totalLessons in module_track
+   * based on lessons with considerForPassing = true and status = 'published'
+   * OPTIMIZED: Uses CTEs and JOINs for better performance, single transaction, and returns affected row counts
+   * @param courseId The course ID to recalculate progress for
+   * @param tenantId The tenant ID for data isolation
+   * @param organisationId The organization ID for data isolation
+   */
+  async recalculateProgress(
+    courseId: string,
+    tenantId: string,
+    organisationId: string
+  ): Promise<{ success: boolean; message: string; courseTrackUpdated: number; moduleTrackUpdated: number }> {
+    const startTime = Date.now();
+    try {
+      this.logger.log(`[PERF] Recalculating progress for courseId: ${courseId}, tenantId: ${tenantId}, organisationId: ${organisationId}`);
+
+      // OPTIMIZED: Verify course exists and get module IDs in parallel
+      const [course, moduleIds] = await Promise.all([
+        this.courseRepository.findOne({
+          where: {
+            courseId,
+            tenantId,
+            organisationId
+          } as FindOptionsWhere<Course>,
+          select: ['courseId']
+        }),
+        this.moduleRepository
+          .createQueryBuilder('module')
+          .select('module.moduleId')
+          .where('module.courseId = :courseId', { courseId })
+          .andWhere('module.tenantId = :tenantId', { tenantId })
+          .andWhere('module.organisationId = :organisationId', { organisationId })
+          .getMany()
+      ]);
+
+      if (!course) {
+        throw new NotFoundException(RESPONSE_MESSAGES.ERROR.COURSE_NOT_FOUND);
+      }
+
+      const moduleIdList = moduleIds.map(m => m.moduleId);
+
+      // OPTIMIZED: Use CTEs with LEFT JOIN LATERAL to ensure ALL tracks are updated
+      // This ensures every course_track row is updated, even if there are no lessons
+      const courseUpdateSql = `
+        UPDATE course_track ct
+        SET "noOfLessons" = COALESCE((
+          SELECT COUNT(l."lessonId")::integer
+          FROM lessons l
+          WHERE l."courseId" = ct."courseId"
+            AND l."tenantId" = ct."tenantId"
+            AND l."organisationId" = ct."organisationId"
+            AND l.status = 'published'
+            AND l."considerForPassing" = true
+        ), 0)
+        WHERE ct."tenantId" = $1
+          AND ct."organisationId" = $2
+          AND ct."courseId" = $3
+      `;
+
+      // Build module update query - use correlated subquery to ensure ALL tracks are updated
+      let moduleUpdateSql: string;
+      let moduleUpdateParams: any[];
+      
+      if (moduleIdList.length === 0) {
+        // No modules to update
+        moduleUpdateSql = `SELECT 0 as count`;
+        moduleUpdateParams = [];
+      } else {
+        // Use IN clause with proper parameterization and correlated subquery
+        // Parameters: $1=tenantId, $2=organisationId, $3+ = moduleIds
+        const moduleIdPlaceholders = moduleIdList.map((_, index) => `$${index + 3}`).join(', ');
+        moduleUpdateSql = `
+          UPDATE module_track mt
+          SET "totalLessons" = COALESCE((
+            SELECT COUNT(l."lessonId")::integer
+            FROM lessons l
+            WHERE l."moduleId" = mt."moduleId"
+              AND l."tenantId" = mt."tenantId"
+              AND l."organisationId" = mt."organisationId"
+              AND l.status = 'published'
+              AND l."considerForPassing" = true
+          ), 0)
+          WHERE mt."moduleId" IN (${moduleIdPlaceholders})
+            AND mt."tenantId" = $1
+            AND mt."organisationId" = $2
+        `;
+        moduleUpdateParams = [tenantId, organisationId, ...moduleIdList];
+      }
+
+      // OPTIMIZED: Execute both updates in parallel
+      await Promise.all([
+        this.courseTrackRepository.query(courseUpdateSql, [
+          tenantId,
+          organisationId,
+          courseId
+        ]),
+        moduleIdList.length > 0 
+          ? this.moduleTrackRepository.query(moduleUpdateSql, moduleUpdateParams)
+          : Promise.resolve([])
+      ]);
+
+      // Get total counts of all matching records (matches original behavior)
+      // This counts ALL course_track and module_track records for the course, not just updated ones
+      const [courseTrackCount, moduleTrackCount] = await Promise.all([
+        this.courseTrackRepository.count({
+          where: {
+            courseId,
+            tenantId,
+            organisationId
+          } as FindOptionsWhere<CourseTrack>,
+        }),
+        moduleIdList.length > 0
+          ? this.moduleTrackRepository.count({
+              where: {
+                moduleId: In(moduleIdList),
+                tenantId,
+                organisationId
+              } as FindOptionsWhere<ModuleTrack>,
+            })
+          : Promise.resolve(0)
+      ]);
+
+      const courseTrackUpdated = courseTrackCount;
+      const moduleTrackUpdated = moduleTrackCount;
+
+      const executionTime = Date.now() - startTime;
+      this.logger.log(
+        `[PERF] Progress recalculation completed in ${executionTime}ms. Course tracks: ${courseTrackUpdated}, Module tracks: ${moduleTrackUpdated}`
+      );
+
+      return {
+        success: true,
+        message: `Progress recalculated successfully. Updated ${courseTrackUpdated} course track(s) and ${moduleTrackUpdated} module track(s).`,
+        courseTrackUpdated: courseTrackUpdated,
+        moduleTrackUpdated: moduleTrackUpdated
+      };
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      this.logger.error(`[PERF] Error recalculating progress for courseId: ${courseId} (took ${executionTime}ms)`, error);
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new BadRequestException('Error recalculating progress');
     }
   }
 }

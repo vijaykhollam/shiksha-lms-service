@@ -405,8 +405,29 @@ export class EnrollmentsService {
       }
 
       // Build base query for enrolled courses
+      // OPTIMIZED: Select only required columns to prevent loading unnecessary data and relations
+      // This prevents TypeORM from loading lessons, modules, media, and associatedLesson relations
       const queryBuilder = this.courseRepository
         .createQueryBuilder('course')
+        .select([
+          'course.courseId',
+          'course.tenantId',
+          'course.organisationId',
+          'course.title',
+          'course.alias',
+          'course.shortDescription',
+          'course.description',
+          'course.image',
+          'course.featured',
+          'course.free',
+          'course.status',
+          'course.params',
+          'course.ordering',
+          'course.createdAt',
+          'course.updatedAt',
+          // Explicitly exclude relations: modules, enrollments, lessonTracks
+          // Exclude internal fields: createdBy, updatedBy, certificateGenDateTime, etc.
+        ])
         .innerJoin('course.enrollments', 'enrollment')
         .where('enrollment.tenantId = :tenantId', { tenantId })
         .andWhere('enrollment.organisationId = :organisationId', { organisationId })

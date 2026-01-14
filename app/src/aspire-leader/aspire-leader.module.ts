@@ -5,6 +5,7 @@ import { AspireLeaderController } from './aspire-leader.controller';
 import { AspireLeaderService } from './aspire-leader.service';
 import { TenantModule } from '../common/tenant/tenant.module';
 import { CacheModule } from '../cache/cache.module';
+import { TrackingModule } from '../tracking/tracking.module';
 import { Course } from '../courses/entities/course.entity';
 import { Lesson } from '../lessons/entities/lesson.entity';
 import { CourseTrack } from '../tracking/entities/course-track.entity';
@@ -24,7 +25,8 @@ import { Media } from '../media/entities/media.entity';
       Media,
     ]),
     TenantModule,
-    CacheModule
+    CacheModule,
+    TrackingModule
   ],
   controllers: [AspireLeaderController],
   providers: [AspireLeaderService],

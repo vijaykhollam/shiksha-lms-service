@@ -23,6 +23,7 @@ import { CommonQueryDto } from '../common/dto/common-query.dto';
 import { UpdateLessonTrackingDto } from './dto/update-lesson-tracking.dto';
 import { UpdateCourseTrackingDto } from './dto/update-course-tracking.dto';
 import { UpdateEventProgressDto } from './dto/update-event-progress.dto';
+import { RecalculateProgressDto } from './dto/recalculate-progress.dto';
 import { TenantOrg } from '../common/decorators/tenant-org.decorator';
 import { LessonStatusDto } from './dto/lesson-status.dto';
 import { LessonTrack } from './entities/lesson-track.entity';
@@ -197,6 +198,36 @@ export class TrackingController {
     return this.trackingService.updateEventProgress(
       eventId,
       updateEventProgressDto,
+      tenant.tenantId,
+      tenant.organisationId
+    );
+  }
+
+  @Post('recalculate-progress')
+  @ApiId(API_IDS.RECALCULATE_PROGRESS)
+  @ApiOperation({ summary: 'Recalculate progress for course tracking and module tracking' })
+  @ApiBody({ type: RecalculateProgressDto })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Progress recalculated successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        message: { type: 'string' },
+        courseTrackUpdated: { type: 'number' },
+        moduleTrackUpdated: { type: 'number' }
+      }
+    }
+  })
+  @ApiResponse({ status: 404, description: 'Course not found' })
+  @ApiResponse({ status: 400, description: 'Invalid request data' })
+  async recalculateProgress(
+    @Body() recalculateProgressDto: RecalculateProgressDto,
+    @TenantOrg() tenant: {tenantId: string, organisationId: string},  
+  ) {
+    return this.trackingService.recalculateProgress(
+      recalculateProgressDto.courseId,
       tenant.tenantId,
       tenant.organisationId
     );

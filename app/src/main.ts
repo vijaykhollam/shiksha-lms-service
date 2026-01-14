@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { NestFactory, Reflector } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, RequestMethod } from '@nestjs/common';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ResponseTransformerInterceptor } from './common/interceptors/response-transformer.interceptor';
 import { ConfigService } from '@nestjs/config';
@@ -16,8 +16,14 @@ async function bootstrap() {
     const configService = app.get(ConfigService);
     const port = configService.get('PORT', 4000);
     
-    // Set global prefix
-    app.setGlobalPrefix(configService.get('API_PREFIX', 'api/v1'));
+    // Set global prefix (exclude health endpoints)
+    app.setGlobalPrefix(configService.get('API_PREFIX', 'api/v1'), {
+      exclude: [
+        { path: 'health', method: RequestMethod.GET },
+        { path: 'health/live', method: RequestMethod.GET },
+        { path: 'health/ready', method: RequestMethod.GET },
+      ],
+    });
     
     // Enable CORS
     app.enableCors();

@@ -55,6 +55,7 @@ export const RESPONSE_MESSAGES = {
 
   // Course Structure Specific Messages
   COURSE_STRUCTURE_UPDATED: 'Course structure updated successfully',
+  COURSES_ORDER_UPDATED: 'Courses order updated successfully',
 
   // Error Messages
   ERROR: {

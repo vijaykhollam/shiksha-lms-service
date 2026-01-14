@@ -10,6 +10,7 @@ export enum SortOrder {
 }
 
 export enum SortBy {
+  ORDERING = 'ordering',
   CREATED_AT = 'createdAt',
   UPDATED_AT = 'updatedAt',
   TITLE = 'title',
@@ -101,20 +102,39 @@ export class SearchCourseDto {
   @ApiPropertyOptional({ 
     enum: SortBy, 
     description: 'Field to sort by', 
-    example: SortBy.CREATED_AT,
-    default: SortBy.CREATED_AT
+    example: SortBy.ORDERING,
+    default: SortBy.ORDERING
   })
   @IsOptional()
   @IsEnum(SortBy)
-  sortBy?: SortBy = SortBy.CREATED_AT;
+  sortBy?: SortBy = SortBy.ORDERING;
 
   @ApiPropertyOptional({ 
     enum: SortOrder, 
-    description: 'Sort order', 
+    description: 'Sort order (ASC or DESC)', 
     example: SortOrder.DESC,
     default: SortOrder.DESC
   })
   @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) {
+      return SortOrder.DESC;
+    }
+    if (typeof value === 'string') {
+      const upperValue = value.toUpperCase().trim();
+      if (upperValue === 'ASC') {
+        return SortOrder.ASC;
+      }
+      if (upperValue === 'DESC') {
+        return SortOrder.DESC;
+      }
+    }
+    // If it's already an enum value, return as is
+    if (value === SortOrder.ASC || value === SortOrder.DESC) {
+      return value;
+    }
+    return SortOrder.DESC;
+  })
   @IsEnum(SortOrder)
   orderBy?: SortOrder = SortOrder.DESC;
 }
