@@ -253,9 +253,16 @@ export class TrackingService {
       currentPosition: 0,
       timeSpent: 0
     });
-    //update course tracking and module tracking as here new attempt is started
-    await this.updateCourseAndModuleTracking(lessonTrack, tenantId, organisationId);
+    
+    // Save lesson track first
     const savedLessonTrack = await this.lessonTrackRepository.save(lessonTrack);
+
+    // Update course and module tracking asynchronously (fire and forget) to avoid blocking response
+    // This matches the pattern used in updateProgress for consistency
+    if (savedLessonTrack.courseId) {
+      this.updateCourseAndModuleTracking(savedLessonTrack, tenantId, organisationId)
+        .catch(err => this.logger.error('Failed to update course/module tracking asynchronously', err));
+    }
 
     return savedLessonTrack;
   }
