@@ -25,13 +25,28 @@ export class CourseReportDto {
   courseId: string;
 
   @ApiProperty({
-    description: 'Associated cohort ID',
+    description:
+      'Associated cohort ID (optional). Report queries are scoped by courseId/lessonId; omit for pathway-driven exports that only send pathwayId elsewhere.',
     example: '123e4567-e89b-12d3-a456-426614174001',
     type: 'string',
-    format: 'uuid'
+    format: 'uuid',
+    required: false,
   })
+  @IsOptional()
   @IsUUID()
-  cohortId: string;
+  cohortId?: string;
+
+  @ApiProperty({
+    description:
+      'Pathway ID when the export is pathway-scoped (optional; reserved for future cohort/pathway filtering).',
+    example: '123e4567-e89b-12d3-a456-426614174003',
+    type: 'string',
+    format: 'uuid',
+    required: false,
+  })
+@IsOptional()
+  @IsUUID()
+  pathwayId?: string;
 
   @ApiProperty({
     description: 'Required only for content-level report',

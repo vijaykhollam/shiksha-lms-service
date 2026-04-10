@@ -7,6 +7,8 @@ import {
   Query,
   ParseUUIDPipe,
   Patch,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -27,12 +29,38 @@ import { RecalculateProgressDto } from './dto/recalculate-progress.dto';
 import { TenantOrg } from '../common/decorators/tenant-org.decorator';
 import { LessonStatusDto } from './dto/lesson-status.dto';
 import { LessonTrack } from './entities/lesson-track.entity';
+import { UserJourneyDto, UserJourneyResponseDto } from './dto/user-journey.dto';
 
 @ApiTags('Tracking')
 @ApiBearerAuth()
 @Controller('tracking')
 export class TrackingController {
-  constructor(private readonly trackingService: TrackingService) {
+  constructor(private readonly trackingService: TrackingService) {}
+
+  @Post('userjourney')
+  @HttpCode(HttpStatus.OK)
+  @ApiId(API_IDS.GET_USER_JOURNEY)
+  @ApiOperation({
+    summary: 'Get user journey by user and cohort',
+    description:
+      'Returns enrolled courses for the user in the given cohort with totalEventLessons and isAttendedOneEvent. progressDetail.assessmentOutcome uses assessment internal POST .../internal/attempts/user/result-status (body: userId, testId, tenantId, organisationId; no auth headers) when ASSESSMENT_SERVICE_URL is set; isImported/submitted only for tests.gradingType assessment. Override path with ASSESSMENT_USER_RESULT_PATH if needed. Deduped per testId, parallel. Uses limit/offset for pagination.',
+  })
+  @ApiBody({ type: UserJourneyDto })
+  @ApiResponse({
+    status: 200,
+    description: 'User journey retrieved successfully',
+    type: UserJourneyResponseDto,
+  })
+  @ApiResponse({ status: 400, description: 'Bad request' })
+  async getUserJourney(
+    @Body() userJourneyDto: UserJourneyDto,
+    @TenantOrg() tenant: { tenantId: string; organisationId: string },
+  ): Promise<UserJourneyResponseDto> {
+    return this.trackingService.getUserJourney(
+      userJourneyDto,
+      tenant.tenantId,
+      tenant.organisationId,
+    );
   }
 
 

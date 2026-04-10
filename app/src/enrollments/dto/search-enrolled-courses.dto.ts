@@ -14,6 +14,12 @@ export class UsersEnrolledCoursesDto {
   @IsString()
   userId?: string;
 
+  @ApiPropertyOptional({ description: 'Filter by pathway ID' })
+  @IsOptional()
+  @IsString()
+  pathwayId?: string;
+
+
   @ApiPropertyOptional({ description: 'Limit', example: 10, minimum: 1 })
   @IsOptional()
   @IsNumber()

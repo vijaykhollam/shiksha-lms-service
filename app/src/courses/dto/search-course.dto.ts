@@ -31,6 +31,11 @@ export class SearchCourseDto {
   @IsString()
   cohortId?: string;
 
+  @ApiPropertyOptional({ description: 'Filter by pathway ID' })
+  @IsOptional()
+  @IsString()
+  pathwayId?: string;
+
   @ApiPropertyOptional({ enum: CourseStatus, description: 'Filter by course status' })
   @IsOptional()
   @IsEnum(CourseStatus)

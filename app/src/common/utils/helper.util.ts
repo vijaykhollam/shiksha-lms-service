@@ -101,7 +101,7 @@ export class ValidateCertificateDateTime implements ValidatorConstraintInterface
   defaultMessage(args: ValidationArguments) {
     const object = args.object as any;
     const endDatetimeStr = object.endDatetime;
-    
+
     if (endDatetimeStr) {
       return 'Certificate generation date must be in the future and greater than course end date';
     }

@@ -9,15 +9,46 @@ import { Repository, FindOptionsWhere, Not, FindManyOptions, IsNull, In } from '
 import { CourseTrack, TrackingStatus } from './entities/course-track.entity';
 import { LessonTrack } from './entities/lesson-track.entity';
 import { Course, CourseStatus } from '../courses/entities/course.entity';
-import { Lesson, LessonStatus, AttemptsGradeMethod } from '../lessons/entities/lesson.entity';
+import { Lesson, LessonStatus, AttemptsGradeMethod, LessonFormat } from '../lessons/entities/lesson.entity';
 import { Module, ModuleStatus } from '../modules/entities/module.entity';
 import { RESPONSE_MESSAGES } from '../common/constants/response-messages.constant';
+import { EnrollmentsService } from '../enrollments/enrollments.service';
+import {
+  UserJourneyDto,
+  UserJourneyResponseDto,
+  UserJourneyItemDto,
+} from './dto/user-journey.dto';
 import { UpdateLessonTrackingDto } from './dto/update-lesson-tracking.dto';
 import { UpdateCourseTrackingDto } from './dto/update-course-tracking.dto';
 import { UpdateEventProgressDto } from './dto/update-event-progress.dto';
 import { LessonStatusDto } from './dto/lesson-status.dto';
 import { ConfigService } from '@nestjs/config';
 import { ModuleTrack, ModuleTrackStatus } from './entities/module-track.entity';
+import { LessonsService } from '../lessons/lessons.service';
+import { CacheService } from '../cache/cache.service';
+import axios from 'axios';
+
+type FinalAssessmentOutcome = 'pass' | 'fail' | 'submitted' | null;
+
+/**
+ * Controls how `progressDetail.assessmentOutcome` is computed for user journey (one “final” assessment
+ * lesson per course).
+ *
+ * - **formal_assessment** — Linked `tests.gradingType` is `assessment`. Use assessment-service
+ *   `isImported` plus pass / fail / submitted rules (reviewed attempt, passing marks, etc.).
+ * - **non_formal_grading** — Linked test is quiz, feedback, reflection.prompt, etc. This field is not
+ *   used like a formal end-of-module assessment: completed attempts → `null`; submitted → `submitted` only.
+ * - **fallback** — No test UUID on lesson media, metadata HTTP call failed, or `gradingType` missing on
+ *   the response. Uses the older combined path: LMS `lesson_track` plus `isImported` when present.
+ */
+const USER_OUTCOME_MODE = {
+  FORMAL_ASSESSMENT: 'formal_assessment',
+  NON_FORMAL_GRADING: 'non_formal_grading',
+  FALLBACK: 'fallback',
+} as const;
+
+type UserOutcomeMode =
+  (typeof USER_OUTCOME_MODE)[keyof typeof USER_OUTCOME_MODE];
 
 @Injectable()
 export class TrackingService {
@@ -37,6 +68,9 @@ export class TrackingService {
     @InjectRepository(ModuleTrack)
     private readonly moduleTrackRepository: Repository<ModuleTrack>,
     private readonly configService: ConfigService,
+    private readonly lessonsService: LessonsService,
+    private readonly enrollmentsService: EnrollmentsService,
+    private readonly cacheService: CacheService,
   ) {}
 
   /**
@@ -561,6 +595,11 @@ export class TrackingService {
 
   /**
    * Get an attempt
+   * 
+   * IMPORTANT: This API contains userId in the response, so we DO NOT cache the response.
+   * However, lesson data is read-only and safe to cache. We fetch the lesson separately
+   * through LessonsService.findOne() which handles caching, while tracking/attempt data is
+   * always fetched live from the database.
    */
   async getAttempt(
     attemptId: string,
@@ -568,6 +607,8 @@ export class TrackingService {
     tenantId: string,
     organisationId: string
   ): Promise<LessonTrack> {
+    // Fetch attempt without lesson relation - tracking data must always be fresh
+    // Lesson data may come from cache via LessonsService.findOne()
     const attempt = await this.lessonTrackRepository.findOne({
       where: { 
         lessonTrackId: attemptId,
@@ -575,12 +616,22 @@ export class TrackingService {
         tenantId,
         organisationId
       } as FindOptionsWhere<LessonTrack>,
-      relations: ['lesson', 'lesson.media'],
     });
 
     if (!attempt) {
       throw new NotFoundException(RESPONSE_MESSAGES.ERROR.ATTEMPT_NOT_FOUND);
     }
+
+    // Fetch lesson separately through LessonsService.findOne() which handles caching
+    // Lesson is read-only data, safe to cache. Tracking/attempt data is NOT cached.
+    const lesson = await this.lessonsService.findOne(
+      attempt.lessonId,
+      tenantId,
+      organisationId
+    );
+
+    // Attach lesson to attempt to maintain identical response structure
+    attempt.lesson = lesson;
 
     return attempt;
   }
@@ -1097,21 +1148,50 @@ export class TrackingService {
         moduleUpdateSql = `SELECT 0 as count`;
         moduleUpdateParams = [];
       } else {
-        // Use IN clause with proper parameterization and correlated subquery
+        // OPTIMIZED: Use CTE to calculate lesson counts once, ensures ALL records updated
         // Parameters: $1=tenantId, $2=organisationId, $3+ = moduleIds
+        // Updates totalLessons and calculates progress based on completedLessons / totalLessons * 100
+        // Performance: Calculates lesson count ONCE per module (instead of 3 times per row)
+        // Uses DISTINCT module_track.moduleId to ensure all records are updated, even modules with no lessons
         const moduleIdPlaceholders = moduleIdList.map((_, index) => `$${index + 3}`).join(', ');
         moduleUpdateSql = `
-          UPDATE module_track mt
-          SET "totalLessons" = COALESCE((
-            SELECT COUNT(l."lessonId")::integer
+          WITH target_modules AS (
+            SELECT DISTINCT "moduleId"
+            FROM module_track
+            WHERE "moduleId" IN (${moduleIdPlaceholders})
+              AND "tenantId" = $1
+              AND "organisationId" = $2
+          ),
+          lesson_counts AS (
+            SELECT 
+              l."moduleId",
+              COUNT(l."lessonId")::integer as total
             FROM lessons l
-            WHERE l."moduleId" = mt."moduleId"
-              AND l."tenantId" = mt."tenantId"
-              AND l."organisationId" = mt."organisationId"
+            WHERE l."moduleId" IN (${moduleIdPlaceholders})
+              AND l."tenantId" = $1
+              AND l."organisationId" = $2
               AND l.status = 'published'
               AND l."considerForPassing" = true
-          ), 0)
-          WHERE mt."moduleId" IN (${moduleIdPlaceholders})
+            GROUP BY l."moduleId"
+          ),
+          module_lesson_counts AS (
+            SELECT 
+              tm."moduleId",
+              COALESCE(lc.total, 0) as total
+            FROM target_modules tm
+            LEFT JOIN lesson_counts lc ON tm."moduleId" = lc."moduleId"
+          )
+          UPDATE module_track mt
+          SET 
+            "totalLessons" = mlc.total,
+            "progress" = CASE
+              WHEN mlc.total > 0
+              THEN ROUND((mt."completedLessons"::numeric / mlc.total::numeric) * 100)
+              ELSE 0
+            END
+          FROM module_lesson_counts mlc
+          WHERE mt."moduleId" = mlc."moduleId"
+            AND mt."moduleId" IN (${moduleIdPlaceholders})
             AND mt."tenantId" = $1
             AND mt."organisationId" = $2
         `;
@@ -1173,5 +1253,487 @@ export class TrackingService {
       }
       throw new BadRequestException('Error recalculating progress');
     }
+  }
+
+  /**
+   * Get user journey: enrolled courses for user in cohort with event-attendance flags
+   * and final-assessment pass/fail on progressDetail.assessmentOutcome.
+   */
+  async getUserJourney(
+    dto: UserJourneyDto,
+    tenantId: string,
+    organisationId: string,
+  ): Promise<UserJourneyResponseDto> {
+    const offset = Math.max(0, dto.offset ?? 0);
+    const limit = Math.min(100, Math.max(1, dto.limit ?? 10));
+
+    if (!dto.cohortId && !dto.pathwayId) {
+      throw new BadRequestException('Either cohortId or pathwayId must be provided.');
+    }
+
+    if (dto.cohortId && dto.pathwayId) {
+      throw new BadRequestException(
+        'Either cohortId or pathwayId must be provided, but not both.',
+      );
+    }
+
+    const { courses, totalElements } = await this.enrollmentsService.usersEnrolledCourses(
+      {
+        userId: dto.userId,
+        cohortId: dto.cohortId,
+        pathwayId: dto.pathwayId,
+        limit,
+        offset,
+      },
+      tenantId,
+      organisationId,
+    );
+
+    if (courses.length === 0) {
+      return {
+        courses: [],
+        totalElements,
+        offset,
+        limit,
+      };
+    }
+
+    const courseIds = courses.map((c) => c.courseId);
+
+    const [cachedEventLessonIdResults, courseTracks, assessmentOutcomeByCourse] =
+      await Promise.all([
+        Promise.all(courseIds.map((id) => this.cacheService.getCourseEventLessons(id))),
+        this.courseTrackRepository.find({
+          where: {
+            userId: dto.userId,
+            courseId: In(courseIds),
+            tenantId,
+            organisationId,
+          },
+          select: [
+            'courseId',
+            'status',
+            'completedLessons',
+            'noOfLessons',
+            'lastAccessedDate',
+            'certificateIssued',
+          ],
+        }),
+        this.determineCourseOutcomes(
+          dto.userId,
+          courseIds,
+          tenantId,
+          organisationId,
+        ),
+      ]);
+
+    const courseToEventLessonIds = new Map<string, string[]>();
+    const courseIdsToFetch: string[] = [];
+
+    courseIds.forEach((id, index) => {
+      const cached = cachedEventLessonIdResults[index];
+      if (cached) {
+        courseToEventLessonIds.set(id, cached);
+      } else {
+        courseIdsToFetch.push(id);
+      }
+    });
+
+    if (courseIdsToFetch.length > 0) {
+      const eventLessonsFromDb = await this.lessonRepository.find({
+        where: {
+          courseId: In(courseIdsToFetch),
+          format: LessonFormat.EVENT,
+          status: LessonStatus.PUBLISHED,
+          tenantId,
+          organisationId,
+        },
+        select: ['lessonId', 'courseId'],
+      });
+
+      const freshCourseToEventLessonIds = new Map<string, string[]>();
+      for (const l of eventLessonsFromDb) {
+        const list = freshCourseToEventLessonIds.get(l.courseId) ?? [];
+        list.push(l.lessonId);
+        freshCourseToEventLessonIds.set(l.courseId, list);
+      }
+
+      for (const id of courseIdsToFetch) {
+        const list = freshCourseToEventLessonIds.get(id) ?? [];
+        courseToEventLessonIds.set(id, list);
+        this.cacheService.setCourseEventLessons(id, list).catch((err) => {
+          this.logger.warn(`Failed to set event lessons cache for course ${id}: ${err.message}`);
+        });
+      }
+    }
+
+    const courseTrackByCourseId = new Map(courseTracks.map((t) => [t.courseId, t]));
+
+    const allEventLessonIds = Array.from(courseToEventLessonIds.values()).flat();
+    let completedEventLessonIds = new Set<string>();
+
+    if (allEventLessonIds.length > 0) {
+      const completed = await this.lessonTrackRepository.find({
+        where: {
+          userId: dto.userId,
+          lessonId: In(allEventLessonIds),
+          status: TrackingStatus.COMPLETED,
+          tenantId,
+          organisationId,
+        },
+        select: ['lessonId'],
+      });
+      completedEventLessonIds = new Set(completed.map((r) => r.lessonId));
+    }
+
+    const resultCourses: UserJourneyItemDto[] = courses.map((course) => {
+      const eventLessonIds = courseToEventLessonIds.get(course.courseId) ?? [];
+      const totalEventLessons = eventLessonIds.length;
+      const isAttendedOneEvent =
+        totalEventLessons > 0 &&
+        eventLessonIds.some((id) => completedEventLessonIds.has(id));
+      const track = courseTrackByCourseId.get(course.courseId);
+      const noOfLessons = track?.noOfLessons ?? 0;
+      const completedLessons = track?.completedLessons ?? 0;
+      const progressPct =
+        noOfLessons > 0 ? Math.round((completedLessons / noOfLessons) * 100) : 0;
+      const courseTrackStatus = track?.status ?? TrackingStatus.NOT_STARTED;
+      const progressDetail = {
+        courseTrackStatus,
+        completedLessons,
+        noOfLessons,
+        progress: progressPct,
+        lastAccessedDate: track?.lastAccessedDate?.toISOString() ?? null,
+        certificateIssued: track?.certificateIssued ?? false,
+        assessmentOutcome: assessmentOutcomeByCourse.get(course.courseId) ?? null,
+      };
+      return {
+        courseId: course.courseId,
+        name: course.title,
+        title: course.title,
+        alias: course.alias,
+        shortDescription: course.shortDescription,
+        description: course.description,
+        image: course.image,
+        status: courseTrackStatus,
+        progress: progressPct,
+        params: course.params,
+        ordering: course.ordering,
+        totalEventLessons,
+        isAttendedOneEvent,
+        progressDetail,
+      };
+    });
+
+    return {
+      courses: resultCourses,
+      totalElements,
+      offset,
+      limit,
+    };
+  }
+
+  /**
+   * Returns the media `source` string when it is a bare UUID (used as external test id); otherwise null.
+   */
+  private extractUuidFromMediaSource(source: string | null | undefined): string | null {
+    if (source == null || typeof source !== 'string') {
+      return null;
+    }
+    const s = source.trim();
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRe.test(s) ? s : null;
+  }
+
+  /**
+   * For each course, finds the published root assessment lesson with highest ordering and pairs it with
+   * the test id parsed from that lesson’s media source (end-of-course test used on user journey).
+   */
+  private async getAssessementLessonByCourse(
+    courseIds: string[],
+    tenantId: string,
+    organisationId: string,
+  ): Promise<Map<string, { lesson: Lesson; testId: string | null }>> {
+    const result = new Map<string, { lesson: Lesson; testId: string | null }>();
+    if (courseIds.length === 0) {
+      return result;
+    }
+    const rows = await this.lessonRepository.find({
+      where: {
+        courseId: In(courseIds),
+        format: LessonFormat.ASSESSMENT,
+        status: LessonStatus.PUBLISHED,
+        tenantId,
+        organisationId,
+        parentId: IsNull(),
+      },
+      relations: ['media'],
+    });
+    for (const l of rows) {
+      const cur = result.get(l.courseId);
+      if (!cur || (l.ordering ?? 0) > (cur.lesson.ordering ?? 0)) {
+        const testId = this.extractUuidFromMediaSource(l.media?.source);
+        result.set(l.courseId, { lesson: l, testId });
+      }
+    }
+    return result;
+  }
+
+  /** Assessment service `tests.gradingType` value that uses import/review outcome semantics. */
+  private static readonly USER_ASSESSMENT_GRADING_TYPE = 'assessment';
+
+  /**
+   * Calls assessment internal `POST {ASSESSMENT_SERVICE_URL}/internal/attempts/user/result-status`
+   * (body: userId, testId, tenantId, organisationId; no auth headers). Must match assessment
+   * InternalUserResultController. Override with ASSESSMENT_USER_RESULT_PATH if the route differs.
+   * If this call fails, every course falls back to FALLBACK mode (any completed attempt → pass).
+   */
+  private async getScoreByAssessmentTest(
+    userId: string,
+    testIds: string[],
+    tenantId: string,
+    organisationId: string,
+  ): Promise<Map<string, { isImported: boolean; gradingType: string | null }>> {
+    const map = new Map<string, { isImported: boolean; gradingType: string | null }>();
+    const unique = [...new Set(testIds.filter(Boolean))];
+    const base = this.configService.get<string>('ASSESSMENT_SERVICE_URL', '').replace(/\/$/, '');
+    const path = this.configService
+      .get<string>('ASSESSMENT_USER_RESULT_PATH', 'internal/attempts/user/result-status')
+      .replace(/^\/+/, '');
+    if (!base || unique.length === 0) {
+      return map;
+    }
+    const url = `${base}/${path}`;
+    await Promise.all(
+      unique.map(async (testId) => {
+        try {
+          const { data } = await axios.post(
+            url,
+            { userId, testId, tenantId, organisationId },
+            { headers: { 'Content-Type': 'application/json' }, timeout: 15000 },
+          );
+          const payload = data?.result ?? data;
+          if (payload && typeof payload.isImported === 'boolean') {
+            const gradingType =
+              payload.gradingType != null &&
+              typeof payload.gradingType === 'string' &&
+              payload.gradingType.length > 0
+                ? payload.gradingType
+                : null;
+            map.set(testId, { isImported: payload.isImported, gradingType });
+          }
+        } catch (e: any) {
+          this.logger.warn(
+            `getScoreByAssessmentTest testId=${testId}: ${e?.message ?? e}`,
+          );
+        }
+      }),
+    );
+    return map;
+  }
+
+  /**
+   * True when the lesson track is submitted and the stored score is below the lesson’s passing marks
+   * (used when a final result exists externally but pass/fail is not in the HTTP payload).
+   */
+  private isBelowPassingThreshold(
+    attempt: LessonTrack,
+    lesson: Lesson,
+  ): boolean {
+    if (attempt.status === TrackingStatus.COMPLETED) {
+      return false;
+    }
+    if (
+      lesson.totalMarks &&
+      lesson.passingMarks != null &&
+      attempt.score != null &&
+      attempt.status === TrackingStatus.SUBMITTED
+    ) {
+      const pct = (attempt.score / lesson.totalMarks) * 100;
+      const passPct = (lesson.passingMarks / lesson.totalMarks) * 100;
+      if (pct < passPct) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Maps one lesson_track row plus assessment `isImported` to pass | fail | submitted | null.
+   * Used for `formal_assessment` and `fallback` outcome modes (see USER_OUTCOME_MODE); not used on the
+   * non_formal_grading submitted-only path. `assessmentIsImported`: undefined skips import branch; null =
+   * unknown fetch; boolean from assessment service for formal tests.
+   */
+  private determineLessonPassStatus(
+    graded: LessonTrack,
+    lesson: Lesson,
+    assessmentIsImported: boolean | null | undefined,
+  ): FinalAssessmentOutcome {
+    if (graded.status === TrackingStatus.COMPLETED) {
+      return 'pass';
+    }
+    if (graded.status === TrackingStatus.SUBMITTED && assessmentIsImported !== undefined) {
+      if (assessmentIsImported === null) {
+        return this.evaluateAttemptOutcome(graded, lesson);
+      }
+      if (assessmentIsImported === false) {
+        return 'submitted';
+      }
+      if (this.isBelowPassingThreshold(graded, lesson)) {
+        return 'fail';
+      }
+      return 'pass';
+    }
+    return this.evaluateAttemptOutcome(graded, lesson);
+  }
+
+  /**
+   * Chooses journey `assessmentOutcome` from attempts; see USER_OUTCOME_MODE.
+   */
+  private determineLessonOutcomeFromAttempts(
+    attempts: LessonTrack[],
+    lesson: Lesson,
+    assessmentIsImported: boolean | null | undefined,
+    mode: UserOutcomeMode,
+  ): FinalAssessmentOutcome {
+    if (!attempts.length) {
+      return null;
+    }
+
+    // Quiz-like tests: do not surface pass/fail here (see USER_OUTCOME_MODE.non_formal_grading).
+    if (mode === USER_OUTCOME_MODE.NON_FORMAL_GRADING) {
+      if (attempts.some((a) => a.status === TrackingStatus.COMPLETED)) {
+        return null;
+      }
+      const graded = attempts.at(-1)!;
+      if (graded.status === TrackingStatus.SUBMITTED) {
+        return 'submitted';
+      }
+      return null;
+    }
+
+    // formal_assessment + fallback: any completed row → pass, else import-aware rules.
+    if (attempts.some((a) => a.status === TrackingStatus.COMPLETED)) {
+      return 'pass';
+    }
+    const graded = attempts.at(-1)!;
+    return this.determineLessonPassStatus(graded, lesson, assessmentIsImported);
+  }
+
+  /**
+   * Outcome using only LMS lesson_track (no external import flag): fail if below passing, else pass if completed.
+   */
+  private evaluateAttemptOutcome(
+    attempt: LessonTrack,
+    lesson: Lesson,
+  ): FinalAssessmentOutcome {
+    if (this.isBelowPassingThreshold(attempt, lesson)) {
+      return 'fail';
+    }
+    if (attempt.status === TrackingStatus.COMPLETED) {
+      return 'pass';
+    }
+    return null;
+  }
+
+  /**
+   * Builds courseId → assessmentOutcome: picks final assessment lesson per course, calls assessment
+   * internal result-status in parallel, then branches on USER_OUTCOME_MODE.
+   */
+  private async determineCourseOutcomes(
+    userId: string,
+    courseIds: string[],
+    tenantId: string,
+    organisationId: string,
+  ): Promise<Map<string, FinalAssessmentOutcome>> {
+    const out = new Map<string, FinalAssessmentOutcome>();
+    for (const cid of courseIds) {
+      out.set(cid, null);
+    }
+
+    const finalByCourse = await this.getAssessementLessonByCourse(
+      courseIds,
+      tenantId,
+      organisationId,
+    );
+    if (finalByCourse.size === 0) {
+      return out;
+    }
+
+    const testIds: string[] = [];
+    for (const ctx of finalByCourse.values()) {
+      if (ctx.testId) {
+        testIds.push(ctx.testId);
+      }
+    }
+    const assessmentByTestId = await this.getScoreByAssessmentTest(
+      userId,
+      testIds,
+      tenantId,
+      organisationId,
+    );
+
+    const lessonIds = [...finalByCourse.values()].map((c) => c.lesson.lessonId);
+    const tracks = await this.lessonTrackRepository.find({
+      where: {
+        userId,
+        lessonId: In(lessonIds),
+        tenantId,
+        organisationId,
+      },
+      order: { attempt: 'ASC' },
+    });
+
+    const byLesson = new Map<string, LessonTrack[]>();
+    for (const t of tracks) {
+      if (!byLesson.has(t.lessonId)) {
+        byLesson.set(t.lessonId, []);
+      }
+      byLesson.get(t.lessonId)!.push(t);
+    }
+
+    for (const [courseId, ctx] of finalByCourse) {
+      const attempts = byLesson.get(ctx.lesson.lessonId) ?? [];
+      let assessmentIsImported: boolean | null | undefined;
+      let mode: UserOutcomeMode;
+      if (ctx.testId) {
+        const meta = assessmentByTestId.get(ctx.testId);
+        if (meta) {
+          if (meta.gradingType === TrackingService.USER_ASSESSMENT_GRADING_TYPE) {
+            // Formal graded assessment: use import + pass/fail/submitted pipeline.
+            assessmentIsImported = meta.isImported;
+            mode = USER_OUTCOME_MODE.FORMAL_ASSESSMENT;
+          } else if (meta.gradingType != null && meta.gradingType !== '') {
+            // Quiz / feedback / reflection — not the same semantics as formal assessment outcome.
+            assessmentIsImported = undefined;
+            mode = USER_OUTCOME_MODE.NON_FORMAL_GRADING;
+          } else {
+            // Response had no usable gradingType string; keep prior combined behavior.
+            assessmentIsImported = meta.isImported;
+            mode = USER_OUTCOME_MODE.FALLBACK;
+          }
+        } else {
+          // Assessment call failed or returned nothing for this testId.
+          assessmentIsImported = null;
+          mode = USER_OUTCOME_MODE.FALLBACK;
+        }
+      } else {
+        // Lesson media has no UUID test link; LMS-only side of rules.
+        assessmentIsImported = undefined;
+        mode = USER_OUTCOME_MODE.FALLBACK;
+      }
+      const outcome = this.determineLessonOutcomeFromAttempts(
+        attempts,
+        ctx.lesson,
+        assessmentIsImported,
+        mode,
+      );
+      if (outcome !== null) {
+        out.set(courseId, outcome);
+      }
+    }
+
+    return out;
   }
 }

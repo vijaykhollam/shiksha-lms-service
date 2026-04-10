@@ -163,10 +163,25 @@ export class ModulesService {
     const module = this.moduleRepository.create(moduleData);
     const savedModule = await this.moduleRepository.save(module);
 
+    // Extract courseId from saved module for cache invalidation
+    const courseId = savedModule.courseId;
+
     // Cache the new module and invalidate related caches
     await Promise.all([
       this.cacheService.setModule(savedModule),
-      this.cacheService.invalidateModule(savedModule.moduleId, savedModule.courseId, savedModule.tenantId, savedModule.organisationId),
+      this.cacheService.invalidateModule(savedModule.moduleId, courseId, savedModule.tenantId, savedModule.organisationId),
+      // Invalidate course hierarchy cache when module is created
+      courseId
+        ? this.cacheService.invalidateCourseHierarchyCache(courseId)
+        : Promise.resolve(),
+      // Invalidate course enrollment cache when module is created
+      courseId
+        ? this.cacheService.invalidateCourseEnrollments(
+            courseId,
+            savedModule.tenantId,
+            savedModule.organisationId,
+          )
+        : Promise.resolve(),
     ]);
 
     return savedModule;
@@ -237,12 +252,70 @@ export class ModulesService {
       // Update the module
       const savedModule = await this.moduleRepository.save(updatedModule);
 
+    // Extract courseId from saved module for cache invalidation
+    // Use savedModule.courseId as it reflects the actual saved state (may have changed)
+    const courseId = savedModule.courseId;
+    const originalCourseId = module.courseId;
+
     // Update cache and invalidate related caches
     const moduleKey = this.cacheConfig.getModuleKey(savedModule.moduleId, savedModule.tenantId, savedModule.organisationId);
-    await Promise.all([
+    
+    // Prepare cache invalidation promises
+    const cacheInvalidationPromises = [
       this.cacheService.set(moduleKey, savedModule, this.cacheConfig.MODULE_TTL),
-      this.cacheService.invalidateModule(moduleId, module.courseId, tenantId, organisationId),
-    ]);
+      this.cacheService.invalidateModule(moduleId, courseId, tenantId, organisationId),
+    ];
+
+    // Invalidate course hierarchy cache when module is updated
+    // If courseId changed, invalidate both old and new course hierarchy caches
+    if (courseId) {
+      cacheInvalidationPromises.push(
+        this.cacheService.invalidateCourseHierarchyCache(courseId),
+      );
+      // If courseId changed, also invalidate the old course hierarchy
+      if (originalCourseId && originalCourseId !== courseId) {
+        cacheInvalidationPromises.push(
+          this.cacheService.invalidateCourseHierarchyCache(originalCourseId),
+        );
+      }
+    } else if (originalCourseId) {
+      // If courseId was removed, invalidate the old course hierarchy
+      cacheInvalidationPromises.push(
+        this.cacheService.invalidateCourseHierarchyCache(originalCourseId),
+      );
+    }
+
+    // Invalidate course enrollment cache when module is updated
+    if (courseId) {
+      cacheInvalidationPromises.push(
+        this.cacheService.invalidateCourseEnrollments(
+          courseId,
+          tenantId,
+          organisationId,
+        ),
+      );
+      // If courseId changed, also invalidate enrollment cache for old course
+      if (originalCourseId && originalCourseId !== courseId) {
+        cacheInvalidationPromises.push(
+          this.cacheService.invalidateCourseEnrollments(
+            originalCourseId,
+            tenantId,
+            organisationId,
+          ),
+        );
+      }
+    } else if (originalCourseId) {
+      // If courseId was removed, invalidate enrollment cache for old course
+      cacheInvalidationPromises.push(
+        this.cacheService.invalidateCourseEnrollments(
+          originalCourseId,
+          tenantId,
+          organisationId,
+        ),
+      );
+    }
+
+    await Promise.all(cacheInvalidationPromises);
 
     return savedModule;
   }
@@ -313,6 +386,12 @@ export class ModulesService {
       await Promise.all([
         this.cacheService.del(moduleKey),
         this.cacheService.invalidateModule(moduleId, module.courseId, tenantId, organisationId),
+        // Invalidate course enrollment cache when module is deleted
+        this.cacheService.invalidateCourseEnrollments(
+          module.courseId,
+          tenantId,
+          organisationId,
+        ),
       ]);
 
       return {

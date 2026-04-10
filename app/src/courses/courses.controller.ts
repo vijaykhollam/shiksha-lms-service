@@ -162,6 +162,74 @@ export class CoursesController {
     }
   }
 
+  @Get('lesson-counts')
+  @ApiId(API_IDS.GET_LESSON_COUNTS)
+  @ApiOperation({
+    summary: 'Get lesson counts for courses',
+    description: 'Get video, document, and total lesson counts for one or more courses. Optimized direct database query.',
+  })
+  @ApiQuery({
+    name: 'courseIds',
+    description: 'Comma-separated list of course IDs',
+    required: true,
+    type: String,
+    example: 'course-id-1,course-id-2',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Lesson counts retrieved successfully',
+    schema: {
+      type: 'object',
+      additionalProperties: {
+        type: 'object',
+        properties: {
+          videoCount: { type: 'number' },
+          resourceCount: { type: 'number' },
+          totalItems: { type: 'number' },
+        },
+      },
+    },
+  })
+  async getLessonCounts(
+    @Query('courseIds') courseIdsParam: string,
+    @TenantOrg() tenantOrg: { tenantId: string; organisationId: string },
+  ) {
+    if (!courseIdsParam) {
+      throw new BadRequestException('courseIds query parameter is required');
+    }
+
+    if (!tenantOrg.tenantId || !tenantOrg.organisationId) {
+      throw new BadRequestException('tenantid and organisationid headers are required');
+    }
+
+    const courseIds = courseIdsParam.split(',').map((id) => id.trim()).filter(Boolean);
+
+    if (courseIds.length === 0) {
+      throw new BadRequestException('At least one courseId is required');
+    }
+
+    // Validate UUID format for all courseIds
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const invalidIds = courseIds.filter((id) => !uuidRegex.test(id));
+    if (invalidIds.length > 0) {
+      throw new BadRequestException(`Invalid courseId format(s): ${invalidIds.join(', ')}`);
+    }
+
+    const countsMap = await this.coursesService.getLessonCountsByCourseIds(
+      courseIds,
+      tenantOrg.tenantId,
+      tenantOrg.organisationId,
+    );
+
+    // Convert Map to object for JSON response
+    const result: Record<string, { videoCount: number; resourceCount: number; totalItems: number }> = {};
+    countsMap.forEach((counts, courseId) => {
+      result[courseId] = counts;
+    });
+
+    return result;
+  }
+
   @Get(':courseId')
   @ApiId(API_IDS.GET_COURSE_BY_ID)
   @ApiOperation({ summary: 'Get a course by ID' })

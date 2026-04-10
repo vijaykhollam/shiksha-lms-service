@@ -41,6 +41,9 @@ export class CreateCourseDto {
   })
   @IsOptional()
   @IsString({ message: VALIDATION_MESSAGES.COMMON.STRING('Short description') })
+  @MaxLength(255, {
+    message: VALIDATION_MESSAGES.COURSE.SHORT_DESCRIPTION_MAX_LENGTH_255,
+  })
   shortDescription: string;
 
   @ApiProperty({ 
@@ -150,12 +153,26 @@ export class CreateCourseDto {
     example: {
       difficulty: 'intermediate',
       prerequisites: ['basic-programming'],
-      learningOutcomes: ['outcome1', 'outcome2']
+      learningOutcomes: ['outcome1', 'outcome2'],
+      cohortId: '123e4567-e89b-12d3-a456-426614174000',
+      pathwayId: '123e4567-e89b-12d3-a456-426614174000'
     }
   })
   @IsOptional()
   @IsObject({ message: VALIDATION_MESSAGES.COMMON.OBJECT('Additional parameters') })
   params?: Record<string, any>;
+
+  @ApiPropertyOptional({ 
+    description: 'Course pricing information',
+    example: {
+      amount: 99.99,
+      currency: 'USD',
+      type: 'one-time'
+    }
+  })
+  @IsOptional()
+  @IsObject({ message: VALIDATION_MESSAGES.COMMON.OBJECT('Pricing') })
+  pricing?: Record<string, any>;
 
   @ApiPropertyOptional({ 
     description: 'Certificate generation date and time - must be in the future and greater than course end date',
@@ -165,4 +182,13 @@ export class CreateCourseDto {
   @IsDateString()
   @Validate(ValidateCertificateDateTime)
   certificateGenDateTime?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Certificate issue date and time (ISO 8601); past or future dates are allowed',
+    example: '2025-01-01T12:00:00Z',
+  })
+  @IsOptional()
+  @IsDateString()
+  certificateIssueDateTime?: string;
 }

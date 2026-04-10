@@ -14,6 +14,7 @@ import { LessonStatus } from '../lessons/entities/lesson.entity';
 import { EnrollmentStatus } from '../enrollments/entities/user-enrollment.entity';
 import { Course } from '../courses/entities/course.entity';
 import { Lesson } from '../lessons/entities/lesson.entity';
+import { Module as CourseModule } from '../modules/entities/module.entity';
 import {
   CourseTrack,
   TrackingStatus,
@@ -29,7 +30,8 @@ import { UpdateTestProgressDto } from './dto/update-test-progress.dto';
 import { RESPONSE_MESSAGES } from '../common/constants/response-messages.constant';
 import { AttemptsGradeMethod } from '../lessons/entities/lesson.entity';
 import { Media } from '../media/entities/media.entity';
-import { TrackingService } from 'src/tracking/tracking.service';
+import { TrackingService } from '../tracking/tracking.service';
+import { CacheService } from '../cache/cache.service';
 
 @Injectable()
 export class AspireLeaderService {
@@ -50,8 +52,11 @@ export class AspireLeaderService {
     private readonly trackingService: TrackingService,
     @InjectRepository(Media)
     private readonly mediaRepository: Repository<Media>,
+    @InjectRepository(CourseModule)
+    private readonly moduleRepository: Repository<CourseModule>,
     private readonly configService: ConfigService,
-  ) {}
+    private readonly cacheService: CacheService,
+  ) { }
 
   /**
    * Generate course report (course-level or lesson-level)
@@ -64,7 +69,7 @@ export class AspireLeaderService {
   ): Promise<any> {
     const startTime = Date.now();
     this.logger.log(
-      `Generating course report for courseId: ${reportDto.courseId}, cohortId: ${reportDto.cohortId}`,
+     `Generating course report for courseId: ${reportDto.courseId}, cohortId: ${reportDto.cohortId ?? 'n/a'}, pathwayId: ${reportDto.pathwayId ?? 'n/a'}`,
     );
 
     // Validate course exists
@@ -240,10 +245,10 @@ export class AspireLeaderService {
         const progress =
           courseTrackData.noOfLessons > 0
             ? Math.round(
-                (courseTrackData.completedLessons /
-                  courseTrackData.noOfLessons) *
-                  100,
-              )
+              (courseTrackData.completedLessons /
+                courseTrackData.noOfLessons) *
+              100,
+            )
             : 0;
 
         reportItems.push({
@@ -272,7 +277,7 @@ export class AspireLeaderService {
           completedDate: enrollment?.endTime?.toISOString(),
           progress:
             (courseTrackData.completedLessons / courseTrackData.noOfLessons) *
-              100 || 0,
+            100 || 0,
         });
       }
     }
@@ -1023,5 +1028,639 @@ export class AspireLeaderService {
       );
       throw error;
     }
+  }
+  async getAggregatedContent(
+    cohortId: string | undefined,
+    tenantId: string | undefined,
+    organisationId: string | undefined,
+    authorization: string,
+    contentType: string | undefined,
+    pathwayId?: string | undefined,
+    userId?: string | undefined,
+  ): Promise<any> {
+    if (cohortId && pathwayId) {
+      throw new BadRequestException(
+        'Either cohortId or pathwayId must be provided, but not both.',
+      );
+    }
+
+    const effectiveTenantId =
+      tenantId || this.configService.get('TENANT_ID');
+    const effectiveOrganisationId =
+      organisationId || this.configService.get('ORGANISATION_ID');
+
+    const isFiltered = contentType && contentType !== 'all';
+
+    // Cache key: static structure is cached per pathway/cohort + tenant + org + contentType; tracking is never cached
+    const aggregateIdentifier = pathwayId || cohortId;
+    const cacheKey = `course:aggregate:${aggregateIdentifier}:${effectiveTenantId}:${effectiveOrganisationId}:${contentType ?? 'all'}`;
+    this.logger.log(`[aggregate-content] API called, checking cache key: ${cacheKey}`);
+    const cachedStatic = await this.cacheService.getAggregateContentCached(cacheKey);
+    if (cachedStatic !== null) {
+      this.logger.log(`[aggregate-content] API serving from CACHE (HIT), key: ${cacheKey}`);
+      const { courseIds, moduleIds, lessonIds } = this.collectAggregateIds(cachedStatic.courses);
+      const trackWhereBase = {
+        tenantId: effectiveTenantId,
+        organisationId: effectiveOrganisationId,
+        ...(userId && { userId }),
+      };
+      const [courseTracks, moduleTracks, lessonTracks] = await Promise.all([
+        courseIds.length
+          ? this.courseTrackRepository.find({
+              where: {
+                courseId: In(courseIds),
+                ...trackWhereBase,
+              },
+            })
+          : [],
+        moduleIds.length
+          ? this.courseRepository.manager.find('module_track', {
+              where: {
+                moduleId: In(moduleIds),
+                ...trackWhereBase,
+              },
+            })
+          : [],
+        lessonIds.length && trackWhereBase.userId
+          ? this.getGradedLessonTracks(lessonIds, trackWhereBase.userId, effectiveTenantId as string, effectiveOrganisationId as string)
+          : [],
+      ]);
+      const { courseTrackMap, moduleTrackMap, lessonTrackMap } = this.buildTrackingMaps(
+        courseTracks,
+        moduleTracks,
+        lessonTracks,
+      );
+      const mergedCourses = this.mergeTrackingIntoAggregate(
+        JSON.parse(JSON.stringify(cachedStatic.courses)),
+        courseTrackMap,
+        moduleTrackMap,
+        lessonTrackMap,
+      );
+      return { courses: mergedCourses };
+    }
+
+    this.logger.log(`[aggregate-content] API building from DB (CACHE MISS), key: ${cacheKey}`);
+    // 1. Find all published courses for the cohort or pathway
+    const queryBuilder = this.courseRepository
+      .createQueryBuilder('course')
+      // Fetch additional fields: shortDescription, description, image
+      .select([
+        'course.courseId',
+        'course.title',
+        'course.shortDescription',
+        'course.description',
+        'course.image',
+        'course.params'
+      ])
+      .where('course."status" = :status', { status: CourseStatus.PUBLISHED });
+
+    if (cohortId) {
+      queryBuilder.andWhere(`course."params"->>'cohortId' = :cohortId`, {
+        cohortId,
+      });
+    }
+
+    if (pathwayId) {
+      queryBuilder.andWhere(`course."params"->>'pathwayId' = :pathwayId`, {
+        pathwayId,
+      });
+    }
+
+    if (effectiveTenantId) {
+      queryBuilder.andWhere('course."tenantId" = :tenantId', {
+        tenantId: effectiveTenantId,
+      });
+    }
+
+    if (effectiveOrganisationId) {
+      queryBuilder.andWhere('course."organisationId" = :organisationId', {
+        organisationId: effectiveOrganisationId,
+      });
+    }
+
+
+const courses = await queryBuilder.getMany();
+
+    if (courses.length === 0) {
+      const identifierType = cohortId ? 'cohortId' : 'pathwayId';
+      const identifierValue = cohortId || pathwayId;
+      throw new NotFoundException(
+        `No course found with ${identifierType}: ${identifierValue}`,
+      );
+    }
+
+    const aggregatedData: any[] = [];
+    const courseIds = courses.map((course) => course.courseId);
+
+    // 2. Fetch all modules for these courses
+    const moduleWhere: any = {
+      courseId: In(courseIds),
+      status: Not(CourseStatus.ARCHIVED as any),
+    };
+
+    if (effectiveTenantId) moduleWhere.tenantId = effectiveTenantId;
+    if (effectiveOrganisationId)
+      moduleWhere.organisationId = effectiveOrganisationId;
+
+    const allModules = await this.moduleRepository.find({
+      where: moduleWhere,
+      // Fetch additional fields: description, image
+      select: ['moduleId', 'title', 'courseId', 'parentId', 'description', 'image'],
+      order: { ordering: 'ASC' },
+    });
+
+    // 3. Fetch all lessons for these courses
+    const lessonWhere: any = {
+      courseId: In(courseIds),
+      status: LessonStatus.PUBLISHED,
+    };
+
+    if (effectiveTenantId) lessonWhere.tenantId = effectiveTenantId;
+    if (effectiveOrganisationId)
+      lessonWhere.organisationId = effectiveOrganisationId;
+
+    if (isFiltered) {
+      lessonWhere.format = contentType;
+    }
+
+    const allLessons = await this.lessonRepository.find({
+      where: lessonWhere,
+      select: {
+        lessonId: true,
+        title: true,
+        format: true,
+        subFormat: true,
+        courseId: true,
+        moduleId: true,
+        parentId: true,
+        // Additional fields
+        description: true,
+        image: true,
+        startDatetime: true,
+        endDatetime: true,
+        resume: true,
+        ordering: true,
+        checkedOut: true,
+        attemptsGrade: true,
+        totalMarks: true,
+        passingMarks: true,
+        media: {
+          mediaId: true,
+          format: true,
+          subFormat: true,
+          path: true,
+          source: true,
+          status: true,
+        },
+        associatedFiles: {
+            associatedFilesId: true,
+            lessonId: true,
+            mediaId: true,
+            media: {
+              mediaId: true,
+              format: true,
+              subFormat: true,
+              path: true,
+              source: true
+            }
+        }
+      },
+      relations: ['media', 'associatedFiles', 'associatedFiles.media'],
+      order: { ordering: 'ASC' },
+    });
+
+
+    // 4. Fetch Tracking Data (filter by userId when provided for correct user-specific progress)
+    const trackWhereBase = {
+      tenantId: effectiveTenantId,
+      organisationId: effectiveOrganisationId,
+      ...(userId && { userId }),
+    };
+    const [courseTracks, moduleTracks, lessonTracks] = await Promise.all([
+      this.courseTrackRepository.find({
+        where: { courseId: In(courseIds), ...trackWhereBase },
+      }),
+      this.courseRepository.manager.find('module_track', {
+        where: {
+          moduleId: In(allModules.map((m) => m.moduleId)),
+          ...trackWhereBase,
+        },
+      }),
+      (allLessons.length && trackWhereBase.userId)
+        ? this.getGradedLessonTracks(allLessons, trackWhereBase.userId, effectiveTenantId as string, effectiveOrganisationId as string)
+        : [],
+    ]);
+
+    const { courseTrackMap, moduleTrackMap, lessonTrackMap } = this.buildTrackingMaps(
+      courseTracks,
+      moduleTracks,
+      lessonTracks,
+    );
+
+    // 5. Organize data into Maps for O(1) lookup
+    const modulesByCourse = new Map<string, CourseModule[]>();
+    const submodulesByParent = new Map<string, CourseModule[]>();
+    const lessonsByModule = new Map<string, Lesson[]>();
+    const nestedLessonsByParent = new Map<string, Lesson[]>();
+
+    allModules.forEach((mod) => {
+      if (mod.parentId) {
+        if (!submodulesByParent.has(mod.parentId)) submodulesByParent.set(mod.parentId, []);
+        submodulesByParent.get(mod.parentId)?.push(mod);
+      } else {
+        if (!modulesByCourse.has(mod.courseId)) modulesByCourse.set(mod.courseId, []);
+        modulesByCourse.get(mod.courseId)?.push(mod);
+      }
+    });
+
+    allLessons.forEach((lesson) => {
+      if (lesson.parentId) {
+          if (!nestedLessonsByParent.has(lesson.parentId)) nestedLessonsByParent.set(lesson.parentId, []);
+          nestedLessonsByParent.get(lesson.parentId)?.push(lesson);
+      } else if (lesson.moduleId) {
+        if (!lessonsByModule.has(lesson.moduleId)) lessonsByModule.set(lesson.moduleId, []);
+        lessonsByModule.get(lesson.moduleId)?.push(lesson);
+      }
+    });
+
+    // 6. Build the hierarchical structure in memory
+    const coursesList: any[] = [];
+    for (const course of courses) {
+      const cTrack = courseTrackMap.get(course.courseId);
+      const courseData: any = {
+        courseId: course.courseId,
+        title: course.title,
+        shortDescription: course.shortDescription,
+        description: course.description,
+        image: course.image,
+        tracking: {
+            status: cTrack?.status || 'incomplete',
+            progress: cTrack ? Math.round((cTrack.completedLessons / (cTrack.noOfLessons || 1)) * 100) : 0, // Approx if not stored
+            completedLessons: cTrack?.completedLessons || 0,
+            totalLessons: cTrack?.noOfLessons || 0,
+        },
+        modules: [],
+      };
+
+      const topModules = modulesByCourse.get(course.courseId) || [];
+
+      for (const module of topModules) {
+        const mTrack = moduleTrackMap.get(module.moduleId);
+        const moduleData: any = {
+          moduleId: module.moduleId,
+          courseId: module.courseId,
+          title: module.title,
+          description: module.description,
+          image: module.image,
+          tracking: {
+              status: mTrack?.['status'] || 'incomplete',
+              progress: mTrack?.['progress'] || 0,
+              completedLessons: mTrack?.['completedLessons'] || 0,
+              totalLessons: mTrack?.['totalLessons'] || 0
+          },
+          contents: [],
+        };
+
+        const submodules = submodulesByParent.get(module.moduleId) || [];
+        const directLessons = lessonsByModule.get(module.moduleId) || [];
+
+        // Collect all lessons for this "Lesson" (renamed from Module/SubModule context in typical LMS terms)
+        const allModuleLessons = [...directLessons];
+
+        // Flatten sub-modules into the contents of the unit
+        for (const submodule of submodules) {
+          const submoduleLessons = lessonsByModule.get(submodule.moduleId) || [];
+          allModuleLessons.push(...submoduleLessons);
+        }
+
+        moduleData.contents = allModuleLessons.map((lesson) => {
+            const lTrack = lessonTrackMap.get(lesson.lessonId);
+            const nested = nestedLessonsByParent.get(lesson.lessonId) || [];
+            
+            return {
+                lessonId: lesson.lessonId,
+                title: lesson.title,
+                description: lesson.description,
+                image: lesson.image,
+                startDateTime: lesson.startDatetime,
+                endDateTime: lesson.endDatetime,
+                format: lesson.format,
+                subFormat: lesson.subFormat,
+                resume: lesson.resume,
+                ordering: lesson.ordering,
+                media: lesson.media ? {
+                    mediaId: lesson.media.mediaId,
+                    format: lesson.media.format,
+                    subFormat: lesson.media.subFormat,
+                    path: lesson.media.path,
+                    source: lesson.media.source,
+                    // status: lesson.media.status // Removed based on prompt requirement not strictly showing this in media obj
+                } : null,
+                associatedFiles: lesson.associatedFiles?.map(af => ({
+                    lessonID: af.lessonId,
+                    mediaId: af.mediaId,
+                    media: af.media ? {
+                        mediaId: af.media.mediaId,
+                        format: af.media.format,
+                        subFormat: af.media.subFormat,
+                        path: af.media.path,
+                        source: af.media.source
+                    } : null
+                })) || [],
+                associatedLesson: nested.map(nl => {
+                    const nlTrack = lessonTrackMap.get(nl.lessonId);
+                    return {
+                        lessonId: nl.lessonId,
+                        title: nl.title,
+                        desc: nl.description,
+                        image: nl.image,
+                        startDateTime: nl.startDatetime,
+                        endDateTime: nl.endDatetime,
+                        format: nl.format,
+                        subformat: nl.subFormat,
+                        resume: nl.resume,
+                        media: nl.media ? {
+                            mediaId: nl.media.mediaId,
+                            path: nl.media.path,
+                            source: nl.media.source
+                        } : null,
+                        associatedFiles: nl.associatedFiles?.map(af => ({
+                            lessonID: af.lessonId,
+                            mediaId: af.mediaId,
+                            media: af.media
+                        })) || [],
+                        tracking: {
+                            status: nlTrack?.status || 'not_started',
+                            progress: nlTrack?.completionPercentage || 0,
+                            lastAccessed: nlTrack?.startDatetime, // approximate
+                            timeSpent: nlTrack?.timeSpent || 0,
+                            score: nlTrack?.score,
+                            attempt: nlTrack?.attempt
+                        }
+                    };
+                }),
+                tracking: {
+                    status: lTrack?.status || 'not_started',
+                    progress: lTrack?.completionPercentage || 0,
+                    lastAccessed: lTrack?.startDatetime,
+                    timeSpent: lTrack?.timeSpent || 0,
+                    score: lTrack?.score,
+                    attempt: lTrack?.attempt
+                }
+            };
+        });
+
+        if (moduleData.contents.length > 0 || !isFiltered) {
+          courseData.modules.push(moduleData);
+        }
+      }
+
+      if (courseData.modules.length > 0 || !isFiltered) {
+        coursesList.push(courseData);
+      }
+    }
+
+    if (coursesList.length === 0 && isFiltered) {
+      return {
+        courses: [],
+      };
+    }
+
+    // Cache static structure only (no tracking); tracking is merged on each request when served from cache
+    const staticCopy = this.stripTrackingFromAggregate(coursesList);
+    this.logger.log(`[aggregate-content] API caching response for next request, key: ${cacheKey}`);
+    await this.cacheService.setAggregateContentCached(cacheKey, { courses: staticCopy });
+
+    return {
+      courses: coursesList,
+    };
+  }
+
+  /**
+   * Helper method to get the "best" or "specified" attempt per lesson for a user based on attemptsGrade configuration.
+   */
+  private async getGradedLessonTracks(lessons: any[], userId: string, tenantId: string, organisationId: string): Promise<any[]> {
+    if (!lessons || lessons.length === 0) return [];
+
+    let lessonRules = lessons;
+    // If we only have IDs, or missing required fields (like in CACHE HIT scenario with old cache), fetch them
+    if (typeof lessons[0] === 'string' || !lessons[0].attemptsGrade) {
+      const ids = typeof lessons[0] === 'string' ? lessons : lessons.map(l => l.lessonId);
+      lessonRules = await this.lessonRepository.find({
+        where: { lessonId: In(ids), tenantId, organisationId },
+        select: ['lessonId', 'attemptsGrade', 'totalMarks', 'passingMarks']
+      });
+    }
+
+    const lessonIds = lessonRules.map(l => l.lessonId);
+    // Fetch all attempts for these lessons and user, sorted by attempt number
+    const allTracks = await this.lessonTrackRepository.find({
+      where: {
+        lessonId: In(lessonIds),
+        userId,
+        tenantId,
+        organisationId,
+      },
+      order: {
+        attempt: 'ASC',
+      },
+    });
+
+    // Group attempts by lessonId
+    const tracksByLesson = new Map<string, any[]>();
+    allTracks.forEach(track => {
+      if (!tracksByLesson.has(track.lessonId)) {
+        tracksByLesson.set(track.lessonId, []);
+      }
+      tracksByLesson.get(track.lessonId)?.push(track);
+    });
+
+    const bestTracks: any[] = [];
+    for (const lesson of lessonRules) {
+      const attempts = tracksByLesson.get(lesson.lessonId) || [];
+      if (attempts.length === 0) continue;
+
+      let selectedAttempt: any = null;
+      const gradeMethod = lesson.attemptsGrade || AttemptsGradeMethod.LAST_ATTEMPT;
+
+      switch (gradeMethod) {
+        case AttemptsGradeMethod.FIRST_ATTEMPT:
+          selectedAttempt = attempts.find(a => a.attempt === 1);
+          break;
+
+        case AttemptsGradeMethod.HIGHEST:
+          // Find the attempt with the highest score
+          selectedAttempt = attempts.reduce((prev, current) => {
+            return (prev.score > current.score) ? prev : current;
+          }, attempts[0]);
+          break;
+
+        case AttemptsGradeMethod.AVERAGE: {
+          // Calculate average score across all attempts
+          const totalScore = attempts.reduce((sum, a) => sum + (a.score || 0), 0);
+          const averageScore = totalScore / attempts.length;
+          // Use the latest attempt as the base structure but update the score to the average
+          const latestForAvg = attempts.at(-1);
+          selectedAttempt = { 
+            ...latestForAvg, 
+            score: Math.round(averageScore * 100) / 100 // Round to 2 decimal places
+          };
+          break;
+        }
+
+        case AttemptsGradeMethod.LAST_ATTEMPT:
+        default: {
+          // Pick the last COMPLETED attempt if it exists
+          selectedAttempt = [...attempts].reverse().find(a => a.status === TrackingStatus.COMPLETED);
+          
+          // Fallback to the absolute latest attempt if no completed attempt is found
+          if (!selectedAttempt) {
+            selectedAttempt = attempts.at(-1);
+          }
+          break;
+        }
+      }
+
+      if (selectedAttempt) {
+        bestTracks.push(selectedAttempt);
+      }
+    }
+
+    return bestTracks;
+  }
+
+  /**
+   * Build Maps for O(1) tracking lookup by courseId, moduleId, lessonId
+   */
+  private buildTrackingMaps(
+    courseTracks: any[],
+    moduleTracks: any[],
+    lessonTracks: any[],
+  ): {
+    courseTrackMap: Map<string, any>;
+    moduleTrackMap: Map<string, any>;
+    lessonTrackMap: Map<string, any>;
+  } {
+    return {
+      courseTrackMap: new Map<string, any>(
+        courseTracks.map((t: any) => [t.courseId, t] as [string, any]),
+      ),
+      moduleTrackMap: new Map<string, any>(
+        moduleTracks.map((t: any) => [t['moduleId'], t] as [string, any]),
+      ),
+      lessonTrackMap: new Map<string, any>(
+        lessonTracks.map((t: any) => [t.lessonId, t] as [string, any]),
+      ),
+    };
+  }
+
+  /**
+   * Collect courseIds, moduleIds, lessonIds from aggregated courses tree (for fetching tracking after cache hit)
+   */
+  private collectAggregateIds(courses: any[]): { courseIds: string[]; moduleIds: string[]; lessonIds: string[] } {
+    const courseIds: string[] = [];
+    const moduleIds: string[] = [];
+    const lessonIds: string[] = [];
+    for (const c of courses) {
+      if (c.courseId) courseIds.push(c.courseId);
+      for (const m of c.modules || []) {
+        if (m.moduleId) moduleIds.push(m.moduleId);
+        for (const cnt of m.contents || []) {
+          if (cnt.lessonId) lessonIds.push(cnt.lessonId);
+          for (const al of cnt.associatedLesson || []) {
+            if (al.lessonId) lessonIds.push(al.lessonId);
+          }
+        }
+      }
+    }
+    return { courseIds, moduleIds, lessonIds };
+  }
+
+  /**
+   * Deep clone aggregated courses and remove every 'tracking' key (for caching static structure only)
+   */
+  private stripTrackingFromAggregate(courses: any[]): any[] {
+    return courses.map((c) => {
+      const { tracking: _tc, modules: mods, ...courseRest } = c;
+      return {
+        ...courseRest,
+        modules: (mods || []).map((m: any) => {
+          const { tracking: _tm, contents: conts, ...moduleRest } = m;
+          return {
+            ...moduleRest,
+            contents: (conts || []).map((cnt: any) => {
+              const { tracking: _tl, associatedLesson: assoc, ...contentRest } = cnt;
+              return {
+                ...contentRest,
+                associatedLesson: (assoc || []).map((al: any) => {
+                  const { tracking: _ta, ...alRest } = al;
+                  return alRest;
+                }),
+              };
+            }),
+          };
+        }),
+      };
+    });
+  }
+
+  /**
+   * Add tracking data into a copy of static aggregated courses (used when serving from cache).
+   * Builds new objects with property order matching DB response: tracking before modules, tracking before contents.
+   */
+  private mergeTrackingIntoAggregate(
+    courses: any[],
+    courseTrackMap: Map<string, any>,
+    moduleTrackMap: Map<string, any>,
+    lessonTrackMap: Map<string, any>,
+  ): any[] {
+    return courses.map((course) => {
+      const cTrack = courseTrackMap.get(course.courseId);
+      const tracking = {
+        status: cTrack?.status || 'incomplete',
+        progress: cTrack ? Math.round((cTrack.completedLessons / (cTrack.noOfLessons || 1)) * 100) : 0,
+        completedLessons: cTrack?.completedLessons || 0,
+        totalLessons: cTrack?.noOfLessons || 0,
+      };
+      const modules = (course.modules || []).map((m: any) => {
+        const mTrack = moduleTrackMap.get(m.moduleId);
+        const moduleTracking = {
+          status: mTrack?.['status'] || 'incomplete',
+          progress: mTrack?.['progress'] || 0,
+          completedLessons: mTrack?.['completedLessons'] || 0,
+          totalLessons: mTrack?.['totalLessons'] || 0,
+        };
+        const contents = (m.contents || []).map((cnt: any) => {
+          const lTrack = lessonTrackMap.get(cnt.lessonId);
+          const contentTracking = {
+            status: lTrack?.status || 'not_started',
+            progress: lTrack?.completionPercentage || 0,
+            lastAccessed: lTrack?.startDatetime,
+            timeSpent: lTrack?.timeSpent || 0,
+            score: lTrack?.score,
+            attempt: lTrack?.attempt,
+          };
+          const associatedLesson = (cnt.associatedLesson || []).map((al: any) => {
+            const nlTrack = lessonTrackMap.get(al.lessonId);
+            const alTracking = {
+              status: nlTrack?.status || 'not_started',
+              progress: nlTrack?.completionPercentage || 0,
+              lastAccessed: nlTrack?.startDatetime,
+              timeSpent: nlTrack?.timeSpent || 0,
+              score: nlTrack?.score,
+              attempt: nlTrack?.attempt,
+            };
+            return { ...al, tracking: alTracking };
+          });
+          return { ...cnt, associatedLesson, tracking: contentTracking };
+        });
+        // Explicit order: ...moduleFields, tracking, contents (tracking before contents)
+        const { contents: _c, ...moduleRest } = m;
+        return { ...moduleRest, tracking: moduleTracking, contents };
+      });
+      // Explicit order: ...courseFields, tracking, modules (tracking before modules)
+      const { modules: _m, ...courseRest } = course;
+      return { ...courseRest, tracking, modules };
+    });
   }
 }

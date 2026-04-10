@@ -12,6 +12,8 @@ import { CourseTrack } from '../tracking/entities/course-track.entity';
 import { LessonTrack } from '../tracking/entities/lesson-track.entity';
 import { UserEnrollment } from '../enrollments/entities/user-enrollment.entity';
 import { Media } from '../media/entities/media.entity';
+import { Module as CourseModule } from '../modules/entities/module.entity';
+
 
 @Module({
   imports: [
@@ -23,6 +25,7 @@ import { Media } from '../media/entities/media.entity';
       LessonTrack,
       UserEnrollment,
       Media,
+      CourseModule,
     ]),
     TenantModule,
     CacheModule,
@@ -32,4 +35,4 @@ import { Media } from '../media/entities/media.entity';
   providers: [AspireLeaderService],
   exports: [AspireLeaderService],
 })
-export class AspireLeaderModule {} 
+export class AspireLeaderModule { } 
